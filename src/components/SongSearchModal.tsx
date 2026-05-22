@@ -71,7 +71,12 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
     
     const delayDebounce = setTimeout(async () => {
       try {
-        const serverUrl = `http://${backendHost}:3001`;
+        const getServerUrl = (host: string) => {
+          return host.includes('://') 
+            ? host 
+            : `http://${host}${host.includes(':') ? '' : ':3001'}`;
+        };
+        const serverUrl = getServerUrl(backendHost);
         const response = await fetch(
           `${serverUrl}/api/search?q=${encodeURIComponent(term)}`
         );
