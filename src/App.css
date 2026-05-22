@@ -1,1 +1,35 @@
 /* Custom App classes if needed (using Tailwind for layout) */
+
+/* Progress Slider custom styles */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+input[type="range"]:hover::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+}
+
+input[type="range"]:hover::-moz-range-thumb {
+  opacity: 1;
+}
