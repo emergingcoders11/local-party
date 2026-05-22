@@ -102,6 +102,7 @@ function App() {
   const [isMuted, setIsMuted] = useState(false);
   const [backendHost, setBackendHost] = useState<string>(() => {
     const saved = localStorage.getItem('backend_host');
+    const defaultHost = (import.meta.env.VITE_BACKEND_HOST as string) || window.location.hostname;
     const currentHost = window.location.hostname;
     const isCurrentLoopback = ['localhost', '127.0.0.1', '::1'].includes(currentHost);
     
@@ -109,9 +110,9 @@ function App() {
       if (saved && !['localhost', '127.0.0.1', '::1'].includes(saved)) {
         return saved;
       }
-      return currentHost;
+      return defaultHost;
     }
-    return saved || currentHost;
+    return saved || defaultHost;
   });
   const [isHostOnline, setIsHostOnline] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
@@ -414,11 +415,17 @@ function App() {
     };
   }, [userRole, isPlaying, currentSong, isPlayerReady]);
 
+  const getServerUrl = (host: string) => {
+    return host.includes('://') 
+      ? host 
+      : `http://${host}${host.includes(':') ? '' : ':3001'}`;
+  };
+
   // Connect to Socket.IO Server
   function connectSocket(targetHost: string = backendHost): Socket {
     if (socketRef.current) return socketRef.current;
 
-    const serverUrl = `http://${targetHost}:3001`;
+    const serverUrl = getServerUrl(targetHost);
     console.log(`Connecting to Socket server: ${serverUrl}`);
     const socket = io(serverUrl);
 
@@ -677,7 +684,7 @@ function App() {
   // Discovery Action: Fetch Nearby Rooms
   const fetchNearbyRooms = async () => {
     try {
-      const serverUrl = `http://${backendHost}:3001`;
+      const serverUrl = getServerUrl(backendHost);
       const res = await fetch(`${serverUrl}/api/rooms`);
       if (res.ok) {
         const data = await res.json();
