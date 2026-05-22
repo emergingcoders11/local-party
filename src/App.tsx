@@ -1,7 +1,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 /* eslint-disable react-hooks/exhaustive-deps */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { 
   Play, 
@@ -23,11 +23,16 @@ import {
   VolumeX,
   Layers,
   Settings,
-  Wifi
+  Wifi,
+  Lock,
+  X,
+  Search
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SongSearchModal } from './components/SongSearchModal';
 import { RoomQRModal } from './components/RoomQRModal';
+import { ConfirmationModal } from './components/ConfirmationModal';
+import { InactivityWarningModal } from './components/InactivityWarningModal';
 import type { Song, PlayableSong } from './types';
 import './App.css';
 
@@ -47,6 +52,7 @@ interface RoomUser {
   socketId: string;
   name: string;
   isHost: boolean;
+  ip?: string;
 }
 
 interface DiscoveredRoom {
@@ -54,6 +60,7 @@ interface DiscoveredRoom {
   roomName: string;
   hostName: string;
   userCount: number;
+  isPrivate: boolean;
   currentSong: {
     title: string;
     artist: string;
@@ -62,32 +69,46 @@ interface DiscoveredRoom {
   } | null;
 }
 
+const YouTubePlaceholder = memo(() => {
+  return <div id="youtube-player" className="w-full h-full" />;
+}, () => true);
+
 function App() {
   // App views
   const [currentView, setCurrentView] = useState<'landing' | 'create-room' | 'join-room' | 'player' | 'discovery'>('landing');
   const [userRole, setUserRole] = useState<'host' | 'guest' | null>(null);
   
   // Inputs
-  const [hostName, setHostName] = useState(() => {
-    return localStorage.getItem('party_host_name') || 'Host';
-  });
-  const [guestName, setGuestName] = useState(() => {
-    return localStorage.getItem('party_guest_name') || 'Guest';
-  });
+  const [hostName, setHostName] = useState('');
+  const [guestName, setGuestName] = useState('');
   const [partyName, setPartyName] = useState('');
   const [roomCodeInput, setRoomCodeInput] = useState('');
+  
+  // Room password
+  const [roomPassword, setRoomPassword] = useState('');
+  const [isPrivateRoom, setIsPrivateRoom] = useState(false);
+  const [joinPassword, setJoinPassword] = useState('');
   
   // Active Room details
   const [roomCode, setRoomCode] = useState('');
   const [roomName, setRoomName] = useState('');
   const [hostLocalIp, setHostLocalIp] = useState('');
   const [users, setUsers] = useState<RoomUser[]>([]);
-  const [recentlyPlayed, setRecentlyPlayed] = useState<{ title: string; artist: string; albumArt: string }[]>([]);
   const [myUsername, setMyUsername] = useState('');
+  
+  // Room search + kick
+  const [roomSearchQuery, setRoomSearchQuery] = useState('');
+  const [kickTarget, setKickTarget] = useState<RoomUser | null>(null);
+  const [isConfirmKickOpen, setIsConfirmKickOpen] = useState(false);
   
   // Music Playback state (synced)
   const [currentSong, setCurrentSong] = useState<PlayableSong | null>(null);
   const [playbackProgress, setPlaybackProgress] = useState(0);
+  const latestProgressRef = useRef<number>(0);
+  const updatePlaybackProgress = (val: number) => {
+    latestProgressRef.current = val;
+    setPlaybackProgress(val);
+  };
   const [isPlaying, setIsPlaying] = useState(false);
   
   // Host-only: upcoming queue
@@ -96,8 +117,24 @@ function App() {
   // UI states
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isQrOpen, setIsQrOpen] = useState(false);
+  const [isConfirmEndOpen, setIsConfirmEndOpen] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [discoveredRooms, setDiscoveredRooms] = useState<DiscoveredRoom[]>([]);
+
+  // Inactivity warning state
+  const [isInactivityWarningOpen, setIsInactivityWarningOpen] = useState(false);
+  const [inactivityCountdown, setInactivityCountdown] = useState(120);
+
+  const filteredDiscoveredRooms = discoveredRooms.filter((r) => {
+    const query = roomSearchQuery.trim().toLowerCase();
+    if (!query) return true;
+    return (
+      r.roomName.toLowerCase().includes(query) ||
+      r.hostName.toLowerCase().includes(query) ||
+      r.roomCode.toLowerCase().includes(query)
+    );
+  });
+
   const [isScanningQR, setIsScanningQR] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [backendHost, setBackendHost] = useState<string>(() => {
@@ -129,6 +166,8 @@ function App() {
   const progressIntervalRef = useRef<number | null>(null);
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const currentSongRef = useRef<PlayableSong | null>(null);
+  const isDraggingProgressRef = useRef(false);
+  const loadedVideoIdRef = useRef<string>('');
 
   // Handle Toast Notifications (using function declaration so it is hoisted and safe to use in hooks above)
   function showToast(message: string, type: 'success' | 'info' | 'error') {
@@ -190,13 +229,15 @@ function App() {
         }, (res: any) => {
           if (res.success) {
             setUserRole(savedRole);
+            if (savedRole === 'guest') {
+              setIsMuted(true);
+            }
             setRoomCode(res.room.roomCode);
             setRoomName(res.room.roomName);
             setHostLocalIp(res.localIp);
             setMyUsername(res.username);
             setUsers(res.room.users);
             setCurrentSong(res.room.currentSong);
-            setRecentlyPlayed(res.room.recentlyPlayed || []);
             
             if (savedRole === 'host') {
               setHostQueue(res.queue || []);
@@ -224,9 +265,26 @@ function App() {
     currentSongRef.current = currentSong;
   }, [currentSong]);
 
+  // Inactivity countdown timer effect
+  useEffect(() => {
+    if (!isInactivityWarningOpen) return;
+
+    const timer = window.setInterval(() => {
+      setInactivityCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isInactivityWarningOpen]);
+
   // YouTube Player Initialization
   useEffect(() => {
-    if (userRole !== 'host' || currentView !== 'player') return;
+    if (currentView !== 'player') return;
 
     let player: any = null;
 
@@ -236,7 +294,8 @@ function App() {
       if (!container) return false;
       if (!window.YT || !window.YT.Player) return false;
 
-      console.log("Initializing YouTube Player on host...");
+      console.log("Initializing YouTube Player...");
+      loadedVideoIdRef.current = currentSongRef.current?.url || '';
       player = new window.YT.Player('youtube-player', {
         height: '100%',
         width: '100%',
@@ -266,7 +325,7 @@ function App() {
           onStateChange: (event: any) => {
             if (event.data === 0) { // ENDED
               console.log("YouTube track ended. Skipping.");
-              if (socketRef.current) {
+              if (userRole === 'host' && socketRef.current) {
                 socketRef.current.emit('song:skip');
               }
             }
@@ -293,38 +352,21 @@ function App() {
       }
       ytPlayerRef.current = null;
       setIsPlayerReady(false);
+      loadedVideoIdRef.current = '';
     };
   }, [userRole, currentView]);
 
-  // Sync YouTube Player Playback for HOST
+  // Sync YouTube Player Playback for Everyone
   useEffect(() => {
-    if (userRole !== 'host' || !ytPlayerRef.current || !isPlayerReady) return;
+    if (!ytPlayerRef.current || !isPlayerReady) return;
     const player = ytPlayerRef.current;
 
     if (currentSong) {
       const videoId = currentSong.url;
-      
-      let currentVideoId = '';
-      if (typeof player.getVideoData === 'function') {
-        try {
-          currentVideoId = player.getVideoData()?.video_id || '';
-        } catch (e) {
-          console.warn("Could not get video data:", e);
-        }
-      }
 
-      if (!currentVideoId) {
-        try {
-          const url = player.getVideoUrl();
-          const match = url?.match(/(?:v=|\/embed\/|v\/|youtu\.be\/|watch\?v=)([^#&?]*)/);
-          currentVideoId = (match && match[1].length === 11) ? match[1] : '';
-        } catch (e) {
-          console.warn("Could not get video URL:", e);
-        }
-      }
-
-      if (currentVideoId !== videoId) {
+      if (loadedVideoIdRef.current !== videoId) {
         console.log("Loading new video ID:", videoId);
+        loadedVideoIdRef.current = videoId;
         if (currentSong.isPlaying) {
           if (typeof player.loadVideoById === 'function') {
             player.loadVideoById({
@@ -367,20 +409,21 @@ function App() {
           console.warn("Error stopping video:", e);
         }
       }
+      loadedVideoIdRef.current = '';
       setIsPlaying(false);
-      setPlaybackProgress(0);
+      updatePlaybackProgress(0);
     }
-  }, [currentSong, userRole, isPlayerReady]);
+  }, [currentSong, isPlayerReady]);
 
-  // Sync mute state for HOST
+  // Sync mute state for Everyone
   useEffect(() => {
-    if (userRole !== 'host' || !ytPlayerRef.current || !isPlayerReady) return;
+    if (!ytPlayerRef.current || !isPlayerReady) return;
     if (isMuted) {
       ytPlayerRef.current.mute();
     } else {
       ytPlayerRef.current.unMute();
     }
-  }, [isMuted, userRole, isPlayerReady]);
+  }, [isMuted, isPlayerReady]);
 
   // Host-only: Periodically emit playback progress updates to sync guests
   useEffect(() => {
@@ -395,8 +438,9 @@ function App() {
     progressIntervalRef.current = window.setInterval(() => {
       const player = ytPlayerRef.current;
       if (player && socketRef.current && typeof player.getCurrentTime === 'function') {
+        if (isDraggingProgressRef.current) return;
         const progress = player.getCurrentTime();
-        setPlaybackProgress(progress);
+        updatePlaybackProgress(progress);
         
         const playerState = player.getPlayerState();
         const isActuallyPlaying = playerState === 1;
@@ -441,10 +485,10 @@ function App() {
     socket.on('song:change', (newSong: PlayableSong | null) => {
       setCurrentSong(newSong);
       if (newSong) {
-        setPlaybackProgress(newSong.progress || 0);
+        updatePlaybackProgress(newSong.progress || 0);
         setIsPlaying(newSong.isPlaying);
       } else {
-        setPlaybackProgress(0);
+        updatePlaybackProgress(0);
         setIsPlaying(false);
       }
     });
@@ -453,26 +497,48 @@ function App() {
       setIsPlaying(serverPlaying);
       setCurrentSong(prev => prev ? { ...prev, isPlaying: serverPlaying } : null);
       
-      if (userRole === 'host') {
-        if (ytPlayerRef.current && isPlayerReady) {
-          const player = ytPlayerRef.current;
-          let playerState = -1;
-          if (typeof player.getPlayerState === 'function') {
-            playerState = player.getPlayerState();
-          }
-          if (serverPlaying && playerState !== 1 && typeof player.playVideo === 'function') {
-            player.playVideo();
-          } else if (!serverPlaying && playerState === 1 && typeof player.pauseVideo === 'function') {
-            player.pauseVideo();
+      if (ytPlayerRef.current && isPlayerReady) {
+        const player = ytPlayerRef.current;
+        let playerState = -1;
+        if (typeof player.getPlayerState === 'function') {
+          playerState = player.getPlayerState();
+        }
+        if (serverPlaying && playerState !== 1 && typeof player.playVideo === 'function') {
+          player.playVideo();
+        } else if (!serverPlaying && playerState === 1 && typeof player.pauseVideo === 'function') {
+          player.pauseVideo();
+        }
+        
+        // For guest, also sync progress if they are too far off (e.g. > 3 seconds)
+        if (userRole !== 'host' && typeof player.getCurrentTime === 'function' && typeof player.seekTo === 'function') {
+          const guestTime = player.getCurrentTime();
+          if (Math.abs(guestTime - progress) > 3) {
+            player.seekTo(progress, true);
           }
         }
-      } else {
-        setPlaybackProgress(progress);
+      }
+
+      if (userRole !== 'host' && !isDraggingProgressRef.current) {
+        updatePlaybackProgress(progress);
       }
     });
 
-    socket.on('room:recently-played-update', (recent) => {
-      setRecentlyPlayed(recent);
+    socket.on('playback:seek', ({ progress, isPlaying: serverPlaying }) => {
+      updatePlaybackProgress(progress);
+      setIsPlaying(serverPlaying);
+      setCurrentSong(prev => prev ? { ...prev, isPlaying: serverPlaying, progress } : null);
+      
+      if (ytPlayerRef.current && isPlayerReady) {
+        const player = ytPlayerRef.current;
+        if (typeof player.seekTo === 'function') {
+          player.seekTo(progress, true);
+        }
+      }
+    });
+
+    socket.on('user:kicked', ({ reason }) => {
+      showToast(`You were removed from the room: ${reason}`, 'error');
+      disconnectSession();
     });
 
     socket.on('room:ended', () => {
@@ -492,6 +558,20 @@ function App() {
     // Host-only Listeners
     socket.on('queue:update', (updatedQueue: PlayableSong[]) => {
       setHostQueue(updatedQueue);
+    });
+
+    socket.on('room:inactivity-warning', ({ warningTimeoutMs }) => {
+      setInactivityCountdown(Math.round(warningTimeoutMs / 1000));
+      setIsInactivityWarningOpen(true);
+    });
+
+    socket.on('room:inactivity-cancelled', () => {
+      setIsInactivityWarningOpen(false);
+    });
+
+    socket.on('room:destroyed-inactivity', () => {
+      showToast('The room was destroyed due to 1 hour of inactivity.', 'error');
+      disconnectSession();
     });
 
     socketRef.current = socket;
@@ -521,12 +601,22 @@ function App() {
     setUserRole(null);
     setUsers([]);
     setCurrentSong(null);
-    setPlaybackProgress(0);
+    updatePlaybackProgress(0);
     setIsPlaying(false);
     setHostQueue([]);
-    setRecentlyPlayed([]);
     setIsHostOnline(true);
+    setDiscoveredRooms([]);
+    setRoomCodeInput('');
+    setIsInactivityWarningOpen(false);
     sessionStorage.removeItem('room_session');
+    
+    // Clean up URL search query parameters (remove ?room=CODE)
+    try {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } catch (e) {
+      console.warn("Failed to clean up URL search parameters:", e);
+    }
+
     setCurrentView('landing');
   }
 
@@ -538,17 +628,29 @@ function App() {
       return;
     }
 
-    localStorage.setItem('party_host_name', hostName);
+    const hostNameClean = hostName.trim();
+    if (!hostNameClean) {
+      showToast('Nickname is required.', 'error');
+      return;
+    }
+    if (hostNameClean.toLowerCase() === 'guest') {
+      showToast('Please enter a valid name. "Guest" is not allowed.', 'error');
+      return;
+    }
 
     const socket = connectSocket();
 
-    socket.emit('room:create', { roomName: partyName, hostName }, (res: any) => {
+    socket.emit('room:create', { 
+      roomName: partyName, 
+      hostName: hostNameClean,
+      password: isPrivateRoom ? roomPassword : null
+    }, (res: any) => {
       if (res.success) {
         setUserRole('host');
         setRoomCode(res.roomCode);
         setRoomName(partyName);
         setHostLocalIp(res.localIp);
-        setMyUsername(hostName);
+        setMyUsername(hostNameClean);
         setUsers(res.room.users);
         setCurrentView('player');
 
@@ -556,9 +658,13 @@ function App() {
           roomCode: res.roomCode,
           roomName: partyName,
           role: 'host',
-          myUsername: hostName,
+          myUsername: hostNameClean,
           backendHost: backendHost
         }));
+
+        // Clear password state
+        setRoomPassword('');
+        setIsPrivateRoom(false);
 
         showToast('Room created successfully!', 'success');
       } else {
@@ -570,25 +676,32 @@ function App() {
   // Action: Join Room
   const handleJoinRoom = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!roomCodeInput.trim() || !guestName.trim()) {
+    const guestNameClean = guestName.trim();
+    if (!roomCodeInput.trim() || !guestNameClean) {
       showToast('Room code and Nickname are required.', 'error');
       return;
     }
-
-    localStorage.setItem('party_guest_name', guestName);
+    if (guestNameClean.toLowerCase() === 'guest') {
+      showToast('Please enter a valid name. "Guest" is not allowed.', 'error');
+      return;
+    }
 
     const socket = connectSocket();
 
-    socket.emit('room:join', { roomCode: roomCodeInput, name: guestName }, (res: any) => {
+    socket.emit('room:join', { 
+      roomCode: roomCodeInput, 
+      name: guestNameClean,
+      password: joinPassword
+    }, (res: any) => {
       if (res.success) {
         setUserRole('guest');
+        setIsMuted(true); // Default to muted to bypass autoplay policy
         setRoomCode(res.room.roomCode);
         setRoomName(res.room.roomName);
         setHostLocalIp(res.localIp);
         setMyUsername(res.username);
         setUsers(res.room.users);
         setCurrentSong(res.room.currentSong);
-        setRecentlyPlayed(res.room.recentlyPlayed || []);
         setCurrentView('player');
 
         sessionStorage.setItem('room_session', JSON.stringify({
@@ -599,9 +712,12 @@ function App() {
           backendHost: backendHost
         }));
 
+        // Clear password state
+        setJoinPassword('');
+
         showToast(`Joined party room!`, 'success');
       } else {
-        showToast(res.message || 'Room not found. Check code.', 'error');
+        showToast(res.message || 'Room not found or incorrect password.', 'error');
         socket.disconnect();
         socketRef.current = null;
       }
@@ -672,17 +788,61 @@ function App() {
     showToast('Song removed from queue', 'info');
   };
 
+  // Inactivity Warning: Continue activity
+  const handleContinueRoomActivity = () => {
+    if (socketRef.current) {
+      socketRef.current.emit('room:continue-activity');
+    }
+  };
+
+  // Host Session Control: Kick User
+  const handleKickUser = (user: RoomUser) => {
+    if (userRole !== 'host' || !socketRef.current) return;
+    setKickTarget(user);
+    setIsConfirmKickOpen(true);
+  };
+
+  const handleConfirmKickUser = () => {
+    if (!socketRef.current || !kickTarget) return;
+    socketRef.current.emit('user:kick', { socketId: kickTarget.socketId }, (res: any) => {
+      if (res.success) {
+        showToast(`Kicked ${kickTarget.name} from room`, 'success');
+      } else {
+        showToast(res.message || 'Failed to kick user', 'error');
+      }
+      setIsConfirmKickOpen(false);
+      setKickTarget(null);
+    });
+  };
+
   // Host Session Control: End Room
   const handleEndRoom = () => {
     if (userRole !== 'host' || !socketRef.current) return;
-    if (confirm('Are you sure you want to end the party room session? This will disconnect all guests.')) {
+    setIsConfirmEndOpen(true);
+  };
+
+  const handleConfirmEndRoom = () => {
+    setIsConfirmEndOpen(false);
+    if (socketRef.current) {
       socketRef.current.emit('room:end');
-      disconnectSession();
+    }
+    disconnectSession();
+  };
+
+  const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    isDraggingProgressRef.current = true;
+    updatePlaybackProgress(parseFloat(e.target.value));
+  };
+
+  const handleProgressSeek = () => {
+    isDraggingProgressRef.current = false;
+    if (socketRef.current) {
+      socketRef.current.emit('playback:seek', { progress: latestProgressRef.current });
     }
   };
 
   // Discovery Action: Fetch Nearby Rooms
-  const fetchNearbyRooms = async () => {
+  const fetchNearbyRooms = async (silent = false) => {
     try {
       const serverUrl = getServerUrl(backendHost);
       const res = await fetch(`${serverUrl}/api/rooms`);
@@ -690,19 +850,23 @@ function App() {
         const data = await res.json();
         setDiscoveredRooms(data);
       } else {
-        showToast('Could not fetch active rooms list.', 'error');
+        if (!silent) {
+          showToast('Could not fetch active rooms list.', 'error');
+        }
       }
     } catch (err) {
       console.error(err);
-      showToast('Error discovering rooms. Is backend online?', 'error');
+      if (!silent) {
+        showToast('Error discovering rooms. Is backend online?', 'error');
+      }
     }
   };
 
   useEffect(() => {
-    if (currentView === 'discovery' || currentView === 'join-room') {
-      fetchNearbyRooms();
+    if (currentView === 'landing' || currentView === 'discovery' || currentView === 'join-room') {
+      fetchNearbyRooms(true);
       // Poll active rooms list every 5 seconds
-      const interval = setInterval(fetchNearbyRooms, 5000);
+      const interval = setInterval(() => fetchNearbyRooms(true), 5000);
       return () => clearInterval(interval);
     }
   }, [currentView, backendHost]);
@@ -999,6 +1163,41 @@ function App() {
                   />
                 </div>
 
+                <div className="flex items-center gap-2 py-1">
+                  <input
+                    id="is-private-room"
+                    type="checkbox"
+                    checked={isPrivateRoom}
+                    onChange={(e) => setIsPrivateRoom(e.target.checked)}
+                    className="w-4 h-4 rounded-sm bg-spotify-light-gray/60 border-white/10 text-spotify-green focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                  />
+                  <label htmlFor="is-private-room" className="text-xs font-bold uppercase tracking-wider text-spotify-text cursor-pointer select-none">
+                    Private Room (Password Protected)
+                  </label>
+                </div>
+
+                {isPrivateRoom && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="space-y-2"
+                  >
+                    <label htmlFor="room-password" className="block text-xs font-bold uppercase tracking-wider text-spotify-text mb-2">
+                      Room Password
+                    </label>
+                    <input
+                      id="room-password"
+                      type="password"
+                      required={isPrivateRoom}
+                      placeholder="Enter room password"
+                      value={roomPassword}
+                      onChange={(e) => setRoomPassword(e.target.value)}
+                      className="w-full px-4 py-3 bg-spotify-light-gray/60 border border-white/5 rounded-xl text-white placeholder-spotify-text focus:outline-hidden focus:border-spotify-green/50 focus:ring-1 focus:ring-spotify-green/20 transition text-sm font-semibold tracking-wide"
+                    />
+                  </motion.div>
+                )}
+
                 <div className="pt-2">
                   <button
                     type="submit"
@@ -1081,6 +1280,34 @@ function App() {
                       className="w-full px-4 py-3 bg-spotify-light-gray/60 border border-white/5 rounded-xl text-white placeholder-spotify-text focus:outline-hidden focus:border-spotify-green/50 focus:ring-1 focus:ring-spotify-green/20 transition text-sm"
                     />
                   </div>
+
+                  {(() => {
+                    const targetDiscoveredRoom = discoveredRooms.find(r => r.roomCode.toUpperCase() === roomCodeInput.toUpperCase());
+                    const isTargetPrivate = targetDiscoveredRoom ? targetDiscoveredRoom.isPrivate : false;
+                    const showPasswordInput = targetDiscoveredRoom ? isTargetPrivate : true;
+                    
+                    return showPasswordInput && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="space-y-2 text-left"
+                      >
+                        <label htmlFor="join-password" className="block text-xs font-bold uppercase tracking-wider text-spotify-text mb-2">
+                          Room Password {targetDiscoveredRoom ? '' : '(Optional)'}
+                        </label>
+                        <input
+                          id="join-password"
+                          type="password"
+                          required={isTargetPrivate}
+                          placeholder={isTargetPrivate ? "Enter room password" : "Enter password if private"}
+                          value={joinPassword}
+                          onChange={(e) => setJoinPassword(e.target.value)}
+                          className="w-full px-4 py-3 bg-spotify-light-gray/60 border border-white/5 rounded-xl text-white placeholder-spotify-text focus:outline-hidden focus:border-spotify-green/50 focus:ring-1 focus:ring-spotify-green/20 transition text-sm font-semibold tracking-wide"
+                        />
+                      </motion.div>
+                    );
+                  })()}
 
                   <div className="pt-2">
                     <button
@@ -1186,23 +1413,26 @@ function App() {
               </div>
 
               {/* Dynamic Nearby discovery list in join room page */}
-              {discoveredRooms.length > 0 && (
+              {filteredDiscoveredRooms.length > 0 && (
                 <div className="glass-panel p-6 rounded-2xl border border-white/5">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-spotify-text mb-4">
                     Active Nearby Parties on WiFi
                   </h3>
                   <div className="space-y-3">
-                    {discoveredRooms.map((r) => (
+                    {filteredDiscoveredRooms.map((r) => (
                       <div 
                         key={r.roomCode}
                         onClick={() => selectDiscoveredRoom(r.roomCode)}
                         className="flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 border border-white/5 hover:border-spotify-green/20 rounded-xl transition group cursor-pointer"
                       >
-                        <div>
-                          <h4 className="text-sm font-bold text-white group-hover:text-spotify-green transition">{r.roomName}</h4>
+                        <div className="min-w-0 flex-1 pr-2">
+                          <div className="flex items-center gap-1.5">
+                            <h4 className="text-sm font-bold text-white group-hover:text-spotify-green transition truncate">{r.roomName}</h4>
+                            {r.isPrivate && <span title="Private Room"><Lock className="w-3.5 h-3.5 text-spotify-green/80 flex-shrink-0" /></span>}
+                          </div>
                           <p className="text-xs text-spotify-text mt-0.5">Host: {r.hostName} • {r.userCount} listening</p>
                         </div>
-                        <span className="px-2.5 py-1 rounded bg-spotify-green/10 text-spotify-green text-xs font-extrabold font-mono uppercase tracking-wider">
+                        <span className="px-2.5 py-1 rounded bg-spotify-green/10 text-spotify-green text-xs font-extrabold font-mono uppercase tracking-wider flex-shrink-0">
                           {r.roomCode}
                         </span>
                       </div>
@@ -1224,11 +1454,11 @@ function App() {
             >
               <div className="flex justify-between items-center mb-8">
                 <div>
-                  <h2 className="text-3xl font-extrabold">Discover Parties</h2>
+                  <h2 className="text-3xl font-extrabold font-sans">Discover Parties</h2>
                   <p className="text-spotify-text text-sm mt-1">Automatic discovery of local network sessions</p>
                 </div>
                 <button
-                  onClick={fetchNearbyRooms}
+                  onClick={() => fetchNearbyRooms()}
                   className="p-2 rounded-full hover:bg-white/10 text-spotify-text hover:text-white transition cursor-pointer"
                   title="Refresh lists"
                 >
@@ -1236,23 +1466,50 @@ function App() {
                 </button>
               </div>
 
-              {discoveredRooms.length === 0 ? (
+              {/* Room Search Input */}
+              <div className="relative mb-6">
+                <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-spotify-text">
+                  <Search className="w-4 h-4" />
+                </span>
+                <input
+                  type="text"
+                  placeholder="Search parties by name, host, or code..."
+                  value={roomSearchQuery}
+                  onChange={(e) => setRoomSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-10 py-3 bg-white/5 border border-white/5 hover:border-white/10 focus:border-spotify-green/50 focus:ring-1 focus:ring-spotify-green/20 rounded-xl text-white placeholder-spotify-text focus:outline-hidden transition text-sm"
+                />
+                {roomSearchQuery && (
+                  <button
+                    onClick={() => setRoomSearchQuery('')}
+                    className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-spotify-text hover:text-white transition cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              {filteredDiscoveredRooms.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center text-spotify-text">
                   <Radio className="w-12 h-12 mb-4 stroke-[1.5] text-spotify-text/30 animate-pulse" />
-                  <p className="font-semibold text-white">Searching for active parties...</p>
+                  <p className="font-semibold text-white">No active parties found</p>
                   <p className="text-xs max-w-xs mt-2">
-                    Make sure an admin has created a room. Everyone must be connected to the same local WiFi.
+                    {roomSearchQuery 
+                      ? "Try searching for a different room name, host, or room code." 
+                      : "Make sure an admin has created a room. Everyone must be connected to the same local WiFi."}
                   </p>
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {discoveredRooms.map((r) => (
+                  {filteredDiscoveredRooms.map((r) => (
                     <div 
                       key={r.roomCode}
                       className="p-4 bg-white/5 border border-white/5 rounded-xl flex items-center justify-between gap-4 hover:border-spotify-green/30 transition group"
                     >
-                      <div className="min-w-0">
-                        <h3 className="font-bold text-white group-hover:text-spotify-green transition truncate">{r.roomName}</h3>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-white group-hover:text-spotify-green transition truncate">{r.roomName}</h3>
+                          {r.isPrivate && <span title="Private Room"><Lock className="w-4 h-4 text-spotify-green/80 flex-shrink-0" /></span>}
+                        </div>
                         <p className="text-xs text-spotify-text mt-1">
                           Host: <span className="font-semibold text-white">{r.hostName}</span> • {r.userCount} users connected
                         </p>
@@ -1265,7 +1522,7 @@ function App() {
                       </div>
                       <button
                         onClick={() => selectDiscoveredRoom(r.roomCode)}
-                        className="px-4 py-2 rounded-full bg-spotify-green text-black font-extrabold hover:scale-105 active:scale-95 transition text-xs cursor-pointer"
+                        className="px-4 py-2 rounded-full bg-spotify-green text-black font-extrabold hover:scale-105 active:scale-95 transition text-xs cursor-pointer flex-shrink-0"
                       >
                         Join Room
                       </button>
@@ -1358,60 +1615,20 @@ function App() {
                     isPlaying ? 'bg-spotify-green scale-110' : 'bg-transparent'
                   }`} />
 
-                  {/* Widescreen Video Viewport for Host / Vinyl disc for Guest */}
-                  {userRole === 'host' ? (
-                    <div className="relative mb-8 w-full aspect-video flex items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/60 shadow-2xl">
-                      {/* YouTube player element must be present in the DOM always to avoid iframe recreation issues */}
-                      <div 
-                        id="youtube-player" 
-                        className={`w-full h-full transition-opacity duration-300 ${currentSong ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} 
-                      />
-                      
-                      {!currentSong && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center text-spotify-text">
-                          <Music className="w-12 h-12 mb-2 stroke-[1.5] text-spotify-text/30 animate-pulse" />
-                          <p className="text-xs">No active video stream</p>
-                        </div>
-                      )}
+                  {/* Widescreen Video Viewport for Everyone */}
+                  <div className="relative mb-8 w-full aspect-video flex items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/60 shadow-2xl">
+                    {/* YouTube player element must be present in the DOM always to avoid iframe recreation issues */}
+                    <div className={`w-full h-full transition-opacity duration-300 ${currentSong ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                      <YouTubePlaceholder />
                     </div>
-                  ) : (
-                    /* Vinyl disc container for Guest */
-                    <div className="relative mb-8 w-60 h-60 flex items-center justify-center select-none">
-                      <AnimatePresence mode="wait">
-                        {currentSong ? (
-                          <motion.div
-                            key={currentSong.id}
-                            initial={{ scale: 0.95, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            exit={{ scale: 0.95, opacity: 0 }}
-                            className={`w-full h-full rounded-full border-[10px] border-spotify-gray shadow-[0_10px_35px_rgba(0,0,0,0.8)] relative overflow-hidden flex items-center justify-center p-4 bg-black ${
-                              isPlaying ? 'animate-spin-slow' : ''
-                            }`}
-                          >
-                            {/* Inner Vinyl Groove lines */}
-                            <div className="absolute inset-3 border border-white/5 rounded-full"></div>
-                            <div className="absolute inset-6 border border-white/5 rounded-full"></div>
-                            <div className="absolute inset-10 border border-white/5 rounded-full"></div>
-                            <div className="absolute inset-16 border border-white/5 rounded-full"></div>
-                            
-                            {/* Center Album Art label */}
-                            <img
-                              src={currentSong.albumArt}
-                              alt={currentSong.title}
-                              className="w-[110px] h-[110px] rounded-full object-cover border-4 border-spotify-dark/70"
-                            />
-                            {/* Center hole pin */}
-                            <div className="absolute w-4 h-4 bg-spotify-black rounded-full border-2 border-spotify-gray shadow-inner"></div>
-                          </motion.div>
-                        ) : (
-                          /* Empty state disk */
-                          <div className="w-full h-full rounded-full border-8 border-dashed border-white/5 flex items-center justify-center p-8 bg-white/2 animate-pulse-slow">
-                            <Music className="w-16 h-16 text-white/10" />
-                          </div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  )}
+                    
+                    {!currentSong && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-spotify-text">
+                        <Music className="w-12 h-12 mb-2 stroke-[1.5] text-spotify-text/30 animate-pulse" />
+                        <p className="text-xs">No active video stream</p>
+                      </div>
+                    )}
+                  </div>
 
                   {/* Track information */}
                   <div className="text-center w-full min-h-[70px] mb-8">
@@ -1435,14 +1652,20 @@ function App() {
 
                   {/* Dynamic Progress Bar */}
                   <div className="w-full space-y-2.5">
-                    <div className="relative h-1 w-full bg-white/10 rounded-full overflow-hidden">
-                      <div 
-                        className="absolute left-0 top-0 h-full bg-spotify-green transition-all duration-300 shadow-[0_0_8px_#1db954]"
-                        style={{ 
-                          width: `${currentSong ? (playbackProgress / currentSong.duration) * 100 : 0}%` 
-                        }}
-                      />
-                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={currentSong ? currentSong.duration : 100}
+                      value={playbackProgress}
+                      onChange={handleProgressChange}
+                      onMouseUp={handleProgressSeek}
+                      onTouchEnd={handleProgressSeek}
+                      disabled={!currentSong}
+                      className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-spotify-green focus:outline-hidden"
+                      style={{
+                        background: `linear-gradient(to right, #1db954 0%, #1db954 ${currentSong ? (playbackProgress / currentSong.duration) * 100 : 0}%, rgba(255,255,255,0.1) ${currentSong ? (playbackProgress / currentSong.duration) * 100 : 0}%, rgba(255,255,255,0.1) 100%)`
+                      }}
+                    />
                     <div className="flex justify-between text-xxs font-bold text-spotify-text tracking-wide font-mono">
                       <span>{formatTime(playbackProgress)}</span>
                       <span>{formatTime(currentSong ? currentSong.duration : 0)}</span>
@@ -1494,13 +1717,28 @@ function App() {
                         </button>
                       </>
                     ) : (
-                      /* Guest View Suggest Track Action */
-                      <button
-                        onClick={() => setIsSearchOpen(true)}
-                        className="px-6 py-3.5 rounded-full bg-spotify-green text-black font-extrabold flex items-center justify-center gap-2 hover:scale-105 active:scale-95 transition shadow-lg cursor-pointer text-sm"
-                      >
-                        <Plus className="w-4 h-4 stroke-[3]" /> Suggest a Song
-                      </button>
+                      <>
+                        {/* Mute output button for Guest */}
+                        <button
+                          onClick={() => setIsMuted(!isMuted)}
+                          className={`p-2.5 rounded-full transition border cursor-pointer ${
+                            isMuted 
+                              ? 'bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20' 
+                              : 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10'
+                          }`}
+                          title={isMuted ? 'Unmute local player' : 'Mute local player'}
+                        >
+                          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                        </button>
+
+                        {/* Guest View Suggest Track Action */}
+                        <button
+                          onClick={() => setIsSearchOpen(true)}
+                          className="px-6 py-3.5 rounded-full bg-spotify-green text-black font-extrabold flex items-center justify-center gap-2 hover:scale-105 active:scale-95 transition shadow-lg cursor-pointer text-sm"
+                        >
+                          <Plus className="w-4 h-4 stroke-[3]" /> Suggest a Song
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -1521,14 +1759,35 @@ function App() {
                     {users.map((u) => (
                       <span 
                         key={u.socketId}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border ${
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-300 ${
                           u.isHost
                             ? 'bg-spotify-green/10 border-spotify-green/30 text-spotify-green font-bold'
                             : 'bg-white/5 border-white/5 text-white'
                         }`}
                       >
-                        <span className={`w-1.5 h-1.5 rounded-full ${u.isHost ? 'bg-spotify-green animate-pulse' : 'bg-emerald-400'}`}></span>
-                        {u.name} {u.isHost ? '(Host)' : ''}
+                        <span className={`w-1.5 h-1.5 rounded-full ${u.isHost ? 'bg-spotify-green animate-pulse' : 'bg-emerald-400'} flex-shrink-0`}></span>
+                        <span className="truncate max-w-[120px]" title={u.name}>{u.name}</span>
+                        {u.isHost && <span className="text-xxs opacity-70">(Host)</span>}
+                        {userRole === 'host' && u.ip && (
+                          <span 
+                            className="text-[9px] opacity-40 font-mono select-all bg-black/30 px-1 rounded ml-0.5" 
+                            title={`IP Address: ${u.ip}`}
+                          >
+                            {u.ip === '::1' || u.ip === '127.0.0.1' || u.ip?.includes('127.0.0.1') 
+                              ? 'localhost' 
+                              : u.ip.replace('::ffff:', '')}
+                          </span>
+                        )}
+                        {userRole === 'host' && !u.isHost && (
+                          <button
+                            type="button"
+                            onClick={() => handleKickUser(u)}
+                            className="p-0.5 rounded-full hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-colors ml-1 cursor-pointer flex items-center justify-center"
+                            title={`Remove ${u.name} from party`}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
                       </span>
                     ))}
                   </div>
@@ -1606,32 +1865,6 @@ function App() {
                         No spoilers here. Keep adding your favorite tracks and enjoy the suspense together!
                       </p>
                     </div>
-
-                    {/* Recently Played tracks history */}
-                    <div className="flex-1 flex flex-col min-h-[140px] overflow-hidden">
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-spotify-text mb-3 border-b border-white/5 pb-2">
-                        Recently Played
-                      </h4>
-                      <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2.5">
-                        {recentlyPlayed.length === 0 ? (
-                          <p className="text-xxs text-spotify-text/60 italic py-4">No tracks played yet.</p>
-                        ) : (
-                          recentlyPlayed.map((song, idx) => (
-                            <div key={idx} className="flex items-center gap-2.5 p-1 rounded-lg">
-                              <img 
-                                src={song.albumArt} 
-                                alt={song.title} 
-                                className="w-8 h-8 rounded object-cover opacity-70 border border-white/5"
-                              />
-                              <div className="min-w-0">
-                                <h5 className="text-xxs font-bold text-white truncate">{song.title}</h5>
-                                <p className="text-xxxs text-spotify-text truncate mt-0.5">{song.artist}</p>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
                   </div>
                 )}
                 
@@ -1654,7 +1887,7 @@ function App() {
 
       {/* Footer */}
       <footer className="w-full border-t border-white/5 bg-spotify-black/20 py-4 text-center text-xxs text-spotify-text font-bold uppercase tracking-wider z-10">
-        LocalParty © {new Date().getFullYear()} • Dedicated Local Network Surprise Playlist System
+        LocalParty © {new Date().getFullYear()} • Created by junior developers of EmergingCoders
       </footer>
 
       {/* MODALS */}
@@ -1670,6 +1903,35 @@ function App() {
         onClose={() => setIsQrOpen(false)}
         roomCode={roomCode}
         localIp={hostLocalIp}
+      />
+
+      <ConfirmationModal
+        isOpen={isConfirmEndOpen}
+        onClose={() => setIsConfirmEndOpen(false)}
+        onConfirm={handleConfirmEndRoom}
+        title="End Party Room"
+        message="Are you sure you want to end the party room session? This will disconnect all guests."
+        confirmText="Yes, End Party"
+        cancelText="Cancel"
+      />
+
+      <ConfirmationModal
+        isOpen={isConfirmKickOpen}
+        onClose={() => {
+          setIsConfirmKickOpen(false);
+          setKickTarget(null);
+        }}
+        onConfirm={handleConfirmKickUser}
+        title="Remove Member"
+        message={`Are you sure you want to remove ${kickTarget?.name || 'this user'} from the room? All songs suggested by this user will also be removed from the playlist.`}
+        confirmText="Remove User"
+        cancelText="Cancel"
+      />
+
+      <InactivityWarningModal
+        isOpen={isInactivityWarningOpen}
+        countdown={inactivityCountdown}
+        onContinue={handleContinueRoomActivity}
       />
 
     </div>

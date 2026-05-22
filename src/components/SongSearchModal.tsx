@@ -66,8 +66,18 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
   useEffect(() => {
     if (!isOpen) return;
 
+    const trimmed = searchQuery.trim();
+
+    // If query is non-empty but too short, clear results and bail out
+    if (trimmed.length > 0 && trimmed.length < 2) {
+      setFilteredSongs([]);
+      setIsSearching(false);
+      return;
+    }
+
     setIsSearching(true);
-    const term = searchQuery.trim() || 'trending';
+    const term = trimmed || 'trending';
+    const controller = new AbortController();
     
     const delayDebounce = setTimeout(async () => {
       try {
@@ -78,18 +88,23 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
         };
         const serverUrl = getServerUrl(backendHost);
         const response = await fetch(
-          `${serverUrl}/api/search?q=${encodeURIComponent(term)}`
+          `${serverUrl}/api/search?q=${encodeURIComponent(term)}`,
+          { signal: controller.signal }
         );
         const data = await response.json();
         setFilteredSongs(data || []);
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
         console.error('Error searching local YouTube API:', error);
       } finally {
         setIsSearching(false);
       }
-    }, searchQuery ? 400 : 0); // Trigger instantly for empty initial search (e.g. "trending")
+    }, searchQuery ? 500 : 0); // Trigger instantly for empty initial search (e.g. "trending")
 
-    return () => clearTimeout(delayDebounce);
+    return () => {
+      clearTimeout(delayDebounce);
+      controller.abort();
+    };
   }, [searchQuery, isOpen, backendHost]);
 
   const handleAdd = async (song: Song) => {
