@@ -173,6 +173,17 @@ function App() {
     setIpInput(backendHost);
     setIsLocalDiscoveryOnly(isLocalHostAddress(backendHost));
   }, [backendHost]);
+
+  const [isScrolled, setIsScrolled] = useState(false);
+
+  // Monitor page scroll to apply dynamic glassmorphic navbar styles
+  useEffect(() => {
+    const handleScroll = () => {
+      setIsScrolled(window.scrollY > 10);
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
   
   // Refs
   const socketRef = useRef<Socket | null>(null);
@@ -981,7 +992,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-spotify-black text-white flex flex-col relative overflow-hidden">
+    <div className="min-h-screen bg-spotify-black text-white flex flex-col relative">
       
       {/* Toast Notifications */}
       <AnimatePresence>
@@ -1004,48 +1015,54 @@ function App() {
         )}
       </AnimatePresence>
 
-      {/* Grid Decorative Particles Backdrop */}
-      <div className="absolute inset-0 pointer-events-none z-0">
-        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-spotify-green/10 rounded-full blur-[120px]"></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-purple-500/10 rounded-full blur-[120px]"></div>
+      {/* Grid Decorative Particles Backdrop - Fixed and hardware accelerated to eliminate scroll lag */}
+      <div className="fixed inset-0 pointer-events-none z-0 select-none" style={{ transform: 'translate3d(0, 0, 0)' }}>
+        <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-spotify-green/10 rounded-full blur-[120px] will-change-transform"></div>
+        <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-purple-500/10 rounded-full blur-[120px] will-change-transform"></div>
         <div className="absolute inset-0 opacity-[0.02] bg-[linear-gradient(to_right,#808080_1px,transparent_1px),linear-gradient(to_bottom,#808080_1px,transparent_1px)] bg-[size:24px_24px]"></div>
       </div>
 
-      {/* Main Layout */}
-      <header className="w-full max-w-7xl mx-auto px-6 py-4 flex items-center justify-between z-10 border-b border-white/5 bg-spotify-black/30 backdrop-blur-md sticky top-0">
-        <div 
-          onClick={disconnectSession} 
-          className="flex items-center gap-2 cursor-pointer group"
-        >
-          <div className="w-9 h-9 rounded-full bg-spotify-green flex items-center justify-center text-black font-extrabold group-hover:scale-105 transition-transform duration-300 shadow-[0_0_15px_rgba(29,185,84,0.3)]">
-            <Radio className="w-5 h-5 animate-pulse" />
-          </div>
-          <span className="font-sans font-black text-xl tracking-tight bg-gradient-to-r from-white via-white to-spotify-green bg-clip-text text-transparent group-hover:text-glow transition duration-300">
-            LocalParty
-          </span>
-        </div>
-
-        <div className="flex items-center gap-4 text-xs font-semibold">
-          {roomCode && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
-              <span className="w-2.5 h-2.5 rounded-full bg-spotify-green animate-ping"></span>
-              <span className="text-spotify-text uppercase font-bold tracking-wide">Live Code:</span>
-              <span className="text-white font-extrabold tracking-wider">{roomCode}</span>
+      {/* Main Layout - Modern glass navbar (always glassmorphic, transitions on scroll) */}
+      <header className={`w-full sticky top-0 z-50 transition-all duration-300 border-b bg-spotify-black/40 backdrop-blur-md border-white/5 py-4 ${
+        isScrolled 
+          ? 'bg-spotify-black/70 backdrop-blur-lg border-white/10 shadow-[0_4px_30px_rgba(0,0,0,0.5)] py-2.5 shadow-md' 
+          : ''
+      }`}>
+        <div className="w-full max-w-7xl mx-auto px-6 flex items-center justify-between">
+          <div 
+            onClick={disconnectSession} 
+            className="flex items-center gap-2 cursor-pointer group"
+          >
+            <div className="w-9 h-9 rounded-full bg-spotify-green flex items-center justify-center text-black font-extrabold group-hover:scale-105 transition-transform duration-300 shadow-[0_0_15px_rgba(29,185,84,0.3)]">
+              <Radio className="w-5 h-5 animate-pulse" />
             </div>
-          )}
+            <span className="font-sans font-black text-xl tracking-tight bg-gradient-to-r from-white via-white to-spotify-green bg-clip-text text-transparent group-hover:text-glow transition duration-300">
+              LocalParty
+            </span>
+          </div>
 
-          {currentView !== 'landing' && !roomCode && (
-            <button 
-              onClick={() => setCurrentView('landing')} 
-              className="flex items-center gap-1.5 text-spotify-text hover:text-white transition cursor-pointer"
-            >
-              <ArrowLeft className="w-4 h-4" /> Back to Home
-            </button>
-          )}
+          <div className="flex items-center gap-4 text-xs font-semibold">
+            {roomCode && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+                <span className="w-2.5 h-2.5 rounded-full bg-spotify-green animate-ping"></span>
+                <span className="text-spotify-text uppercase font-bold tracking-wide">Live Code:</span>
+                <span className="text-white font-extrabold tracking-wider">{roomCode}</span>
+              </div>
+            )}
+
+            {currentView !== 'landing' && !roomCode && (
+              <button 
+                onClick={() => setCurrentView('landing')} 
+                className="flex items-center gap-1.5 text-spotify-text hover:text-white transition cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" /> Back to Home
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      <div className="w-full flex-1 flex z-10 relative max-w-[1600px] mx-auto px-6 gap-6">
+      <div className="w-full flex-1 flex justify-center z-10 relative max-w-[1600px] mx-auto px-6 gap-6">
         {/* Left Sidebar Ad Slot - Hidden (will work on it later) */}
         <div className="hidden w-[200px] flex-shrink-0 flex-col gap-4 py-8">
           <div className="glass-panel p-4 rounded-2xl border border-white/5 h-[600px] sticky top-[100px] flex flex-col items-center justify-center text-center text-spotify-text text-xxs font-bold uppercase tracking-wider">
@@ -1058,7 +1075,7 @@ function App() {
         </div>
 
         {/* Central main content area */}
-        <main className="flex-1 w-full max-w-5xl py-8 flex flex-col justify-center items-center relative min-w-0">
+        <main className="flex-1 w-full max-w-5xl py-8 flex flex-col justify-center items-center relative min-w-0 mx-auto">
         <AnimatePresence mode="wait">
           
           {/* VIEW: LANDING PAGE */}
