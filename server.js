@@ -5,6 +5,15 @@ import cors from 'cors';
 import os from 'os';
 import yts from 'yt-search';
 
+// Global exception and rejection handlers to prevent server crashes
+process.on('uncaughtException', (err) => {
+  console.error('CRITICAL: Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Promise Rejection at:', promise, 'reason:', reason);
+});
+
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -16,6 +25,31 @@ const io = new Server(httpServer, {
 
 app.use(cors());
 app.use(express.json());
+
+// Rate Limiting to prevent spammers/bots from overloading search and rooms API
+const ipRequestCounts = new Map();
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const MAX_REQUESTS_PER_MINUTE = 30; // Max 30 requests per minute per IP
+
+function rateLimiter(req, res, next) {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+  const now = Date.now();
+
+  if (!ipRequestCounts.has(ip)) {
+    ipRequestCounts.set(ip, []);
+  }
+
+  const timestamps = ipRequestCounts.get(ip).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  timestamps.push(now);
+  ipRequestCounts.set(ip, timestamps);
+
+  if (timestamps.length > MAX_REQUESTS_PER_MINUTE) {
+    console.warn(`Rate limit exceeded for IP: ${ip}`);
+    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+  }
+
+  next();
+}
 
 // Root Redirect for Browser Requests, API Status for Health Checks
 app.get('/', (req, res) => {
@@ -40,6 +74,26 @@ const WARNING_TIMEOUT_MS = process.env.WARNING_TIMEOUT_MS
 
 const inactivityTimers = new Map();
 const warningTimers = new Map();
+
+function clearRoomTimers(roomCode) {
+  const inactiveTimer = inactivityTimers.get(roomCode);
+  if (inactiveTimer) {
+    clearTimeout(inactiveTimer);
+    inactivityTimers.delete(roomCode);
+  }
+
+  const warningTimer = warningTimers.get(roomCode);
+  if (warningTimer) {
+    clearTimeout(warningTimer);
+    warningTimers.delete(roomCode);
+  }
+
+  const disconnectTimer = roomDisconnectTimers.get(roomCode);
+  if (disconnectTimer) {
+    clearTimeout(disconnectTimer);
+    roomDisconnectTimers.delete(roomCode);
+  }
+}
 
 function resetRoomActivity(roomCode) {
   const room = rooms.get(roomCode);
@@ -70,6 +124,13 @@ function triggerInactivityWarning(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
 
+  // If the room has an active playing song, it is not inactive. Extend the timer.
+  if (room.currentSong && room.currentSong.isPlaying) {
+    console.log(`Room ${roomCode} has active music playback. Extending activity timer.`);
+    resetRoomActivity(roomCode);
+    return;
+  }
+
   console.log(`Room ${roomCode} has been inactive for 1 hour. Broadcasting warning.`);
   io.to(roomCode).emit('room:inactivity-warning', {
     warningTimeoutMs: WARNING_TIMEOUT_MS
@@ -87,20 +148,7 @@ function destroyRoomDueToInactivity(roomCode) {
 
   console.log(`Room ${roomCode} destroyed due to inactivity.`);
 
-  // Clear timers
-  const inactiveTimer = inactivityTimers.get(roomCode);
-  if (inactiveTimer) clearTimeout(inactiveTimer);
-  inactivityTimers.delete(roomCode);
-
-  const warningTimer = warningTimers.get(roomCode);
-  if (warningTimer) clearTimeout(warningTimer);
-  warningTimers.delete(roomCode);
-
-  // Clear host disconnect grace period timer
-  if (roomDisconnectTimers.has(roomCode)) {
-    clearTimeout(roomDisconnectTimers.get(roomCode));
-    roomDisconnectTimers.delete(roomCode);
-  }
+  clearRoomTimers(roomCode);
 
   io.to(roomCode).emit('room:destroyed-inactivity');
   rooms.delete(roomCode);
@@ -195,7 +243,7 @@ function getLocalIpAddress() {
 const LOCAL_IP = getLocalIpAddress();
 
 // Expose discovery API
-app.get('/api/rooms', (req, res) => {
+app.get('/api/rooms', rateLimiter, (req, res) => {
   const isLocalOnly = req.query.local === 'true';
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
 
@@ -264,7 +312,7 @@ function extractVideoId(query) {
 }
 
 // Expose YouTube search API
-app.get('/api/search', async (req, res) => {
+app.get('/api/search', rateLimiter, async (req, res) => {
   const rawQuery = req.query.q || '';
   const trimmedQuery = rawQuery.trim();
 
@@ -445,7 +493,7 @@ io.on('connection', (socket) => {
   });
 
   // Reconnect to active session
-  socket.on('room:reconnect', ({ roomCode, role, username }, callback) => {
+  socket.on('room:reconnect', ({ roomCode, role, username, password }, callback) => {
     const code = roomCode?.toUpperCase();
     const room = rooms.get(code);
 
@@ -456,10 +504,26 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Security: Validate password for private rooms
+    if (room.password && room.password !== password) {
+      if (typeof callback === 'function') {
+        callback({ success: false, message: 'Incorrect room password.' });
+      }
+      return;
+    }
+
     console.log(`Reconnection request: ${username} (${role}) for room: ${code}`);
 
     // If host is reconnecting, cancel the grace period timer
     if (role === 'host') {
+      // Security: Verify reconnecting host name matches original host name
+      if (username !== room.hostName) {
+        if (typeof callback === 'function') {
+          callback({ success: false, message: 'Unauthorized host reconnect request.' });
+        }
+        return;
+      }
+
       const timer = roomDisconnectTimers.get(code);
       if (timer) {
         clearTimeout(timer);
@@ -473,21 +537,23 @@ io.on('connection', (socket) => {
       const hostUser = room.users.find(u => u.isHost);
       if (hostUser) {
         hostUser.socketId = socket.id;
-        hostUser.name = username || room.hostName;
       } else {
-        room.users.push({ socketId: socket.id, name: username || room.hostName, isHost: true, ip: socket.handshake.address });
+        room.users.push({ socketId: socket.id, name: username, isHost: true, ip: socket.handshake.address });
       }
 
       // Notify guests that the host is back online
       io.to(code).emit('room:host-status', { connected: true });
     } else {
-      // Guest is reconnecting
-      // Update their socket ID in the users list
+      // Guest is reconnecting: Security check
       const guestUser = room.users.find(u => u.name === username);
       if (guestUser) {
         guestUser.socketId = socket.id;
       } else {
-        room.users.push({ socketId: socket.id, name: username, isHost: false, ip: socket.handshake.address });
+        // Guest wasn't in the room before, they cannot bypass normal join
+        if (typeof callback === 'function') {
+          callback({ success: false, message: 'User not found in room session. Please join the room.' });
+        }
+        return;
       }
     }
 
@@ -740,15 +806,7 @@ io.on('connection', (socket) => {
 
     console.log(`Room ended: ${userRoomCode}`);
 
-    // Clear inactivity timers
-    if (room.inactivityTimeout) clearTimeout(room.inactivityTimeout);
-    if (room.warningTimeout) clearTimeout(room.warningTimeout);
-    
-    // Clear any active disconnect timer for this room
-    if (roomDisconnectTimers.has(userRoomCode)) {
-      clearTimeout(roomDisconnectTimers.get(userRoomCode));
-      roomDisconnectTimers.delete(userRoomCode);
-    }
+    clearRoomTimers(userRoomCode);
 
     io.to(userRoomCode).emit('room:ended');
     rooms.delete(userRoomCode);
@@ -785,15 +843,8 @@ io.on('connection', (socket) => {
         console.log(`Grace period expired. Closing room: ${userRoomCode}`);
         io.to(userRoomCode).emit('room:ended');
         
-        // Clear inactivity timers
-        const r = rooms.get(userRoomCode);
-        if (r) {
-          if (r.inactivityTimeout) clearTimeout(r.inactivityTimeout);
-          if (r.warningTimeout) clearTimeout(r.warningTimeout);
-        }
-
+        clearRoomTimers(userRoomCode);
         rooms.delete(userRoomCode);
-        roomDisconnectTimers.delete(userRoomCode);
       }, 15000); // 15 seconds
 
       roomDisconnectTimers.set(userRoomCode, timer);

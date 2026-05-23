@@ -194,6 +194,27 @@ function App() {
   const isDraggingProgressRef = useRef(false);
   const loadedVideoIdRef = useRef<string>('');
 
+  const userRoleRef = useRef<string | null>(null);
+  const currentViewRef = useRef<string>('landing');
+  const roomCodeRef = useRef<string>('');
+  const isPlayerReadyRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    userRoleRef.current = userRole;
+  }, [userRole]);
+
+  useEffect(() => {
+    currentViewRef.current = currentView;
+  }, [currentView]);
+
+  useEffect(() => {
+    roomCodeRef.current = roomCode;
+  }, [roomCode]);
+
+  useEffect(() => {
+    isPlayerReadyRef.current = isPlayerReady;
+  }, [isPlayerReady]);
+
   // Handle Toast Notifications (using function declaration so it is hoisted and safe to use in hooks above)
   function showToast(message: string, type: 'success' | 'info' | 'error') {
     setToast({ message, type });
@@ -245,39 +266,7 @@ function App() {
           localStorage.setItem('backend_host', savedBackendHost);
         }
 
-        const socket = connectSocket(currentHost);
-
-        socket.emit('room:reconnect', {
-          roomCode: savedRoomCode,
-          role: savedRole,
-          username: savedUsername
-        }, (res: any) => {
-          if (res.success) {
-            setUserRole(savedRole);
-            if (savedRole === 'guest') {
-              setIsMuted(true);
-            }
-            setRoomCode(res.room.roomCode);
-            setRoomName(res.room.roomName);
-            setHostLocalIp(res.localIp);
-            setMyUsername(res.username);
-            setUsers(res.room.users);
-            setCurrentSong(res.room.currentSong);
-            
-            if (savedRole === 'host') {
-              setHostQueue(res.queue || []);
-            }
-            
-            setCurrentView('player');
-            showToast(`Restored session in room ${res.room.roomCode}!`, 'success');
-          } else {
-            console.log(`Reconnection failed: ${res.message}`);
-            showToast(res.message || 'Active session could not be restored.', 'info');
-            sessionStorage.removeItem('room_session');
-            socket.disconnect();
-            socketRef.current = null;
-          }
-        });
+        connectSocket(currentHost);
       }
     } catch (e) {
       console.error('Failed to parse active session storage:', e);
@@ -528,8 +517,77 @@ function App() {
     console.log(`Connecting to Socket server: ${serverUrl}`);
     const socket = io(serverUrl);
 
+    let connectErrorCount = 0;
     socket.on('connect_error', () => {
-      showToast('Connection to server failed. Is server.js running?', 'error');
+      connectErrorCount++;
+      if (connectErrorCount === 1) {
+        showToast('Connecting to server (waking up Render backend if idle)...', 'info');
+      } else if (connectErrorCount % 5 === 0) {
+        showToast('Connection to server is taking longer than usual. Please verify if server.js is running.', 'error');
+      }
+    });
+
+    socket.on('connect', () => {
+      connectErrorCount = 0;
+      console.log(`Socket connected: ${socket.id}`);
+      
+      if (roomCodeRef.current) {
+        showToast('Connected back to server!', 'success');
+      }
+
+      const savedSession = sessionStorage.getItem('room_session');
+      if (savedSession) {
+        try {
+          const { roomCode: savedRoomCode, role: savedRole, myUsername: savedUsername, password: savedPassword } = JSON.parse(savedSession);
+          if (savedRoomCode && savedRole && savedUsername) {
+            console.log(`Auto-restoring session for room ${savedRoomCode}...`);
+            socket.emit('room:reconnect', {
+              roomCode: savedRoomCode,
+              role: savedRole,
+              username: savedUsername,
+              password: savedPassword || undefined
+            }, (res: any) => {
+              if (res.success) {
+                console.log(`Successfully reconnected to room ${savedRoomCode}`);
+                setUserRole(savedRole);
+                if (savedRole === 'guest') {
+                  setIsMuted(true);
+                }
+                setRoomCode(res.room.roomCode);
+                setRoomName(res.room.roomName);
+                setHostLocalIp(res.localIp);
+                setMyUsername(res.username);
+                setUsers(res.room.users);
+                setCurrentSong(res.room.currentSong);
+                
+                if (savedRole === 'host') {
+                  setHostQueue(res.queue || []);
+                }
+                
+                setCurrentView('player');
+                
+                if (!roomCodeRef.current) {
+                  showToast(`Restored session in room ${res.room.roomCode}!`, 'success');
+                }
+              } else {
+                console.warn(`Session restoration failed: ${res.message}`);
+                showToast(res.message || 'Session expired or room not found on server.', 'error');
+                disconnectSession();
+              }
+            });
+          }
+        } catch (e) {
+          console.error('Failed to parse saved session on connect:', e);
+        }
+      }
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.log(`Socket disconnected: ${reason}`);
+      // Show error toast if disconnect was unexpected (socketRef is still active)
+      if (socketRef.current) {
+        showToast('Connection to server lost. Reconnecting...', 'error');
+      }
     });
 
     // Listeners for both Host & Guest
@@ -552,7 +610,7 @@ function App() {
       setIsPlaying(serverPlaying);
       setCurrentSong(prev => prev ? { ...prev, isPlaying: serverPlaying } : null);
       
-      if (ytPlayerRef.current && isPlayerReady) {
+      if (ytPlayerRef.current && isPlayerReadyRef.current) {
         const player = ytPlayerRef.current;
         let playerState = -1;
         if (typeof player.getPlayerState === 'function') {
@@ -565,7 +623,7 @@ function App() {
         }
         
         // For guest, also sync progress if they are too far off (e.g. > 3 seconds)
-        if (userRole !== 'host' && typeof player.getCurrentTime === 'function' && typeof player.seekTo === 'function') {
+        if (userRoleRef.current !== 'host' && typeof player.getCurrentTime === 'function' && typeof player.seekTo === 'function') {
           const guestTime = player.getCurrentTime();
           if (Math.abs(guestTime - progress) > 3) {
             player.seekTo(progress, true);
@@ -573,7 +631,7 @@ function App() {
         }
       }
 
-      if (userRole !== 'host' && !isDraggingProgressRef.current) {
+      if (userRoleRef.current !== 'host' && !isDraggingProgressRef.current) {
         updatePlaybackProgress(progress);
       }
     });
@@ -583,7 +641,7 @@ function App() {
       setIsPlaying(serverPlaying);
       setCurrentSong(prev => prev ? { ...prev, isPlaying: serverPlaying, progress } : null);
       
-      if (ytPlayerRef.current && isPlayerReady) {
+      if (ytPlayerRef.current && isPlayerReadyRef.current) {
         const player = ytPlayerRef.current;
         if (typeof player.seekTo === 'function') {
           player.seekTo(progress, true);
@@ -709,12 +767,14 @@ function App() {
         setUsers(res.room.users);
         setCurrentView('player');
 
+        const cleanPassword = isPrivateRoom ? roomPassword.trim() : null;
         sessionStorage.setItem('room_session', JSON.stringify({
           roomCode: res.roomCode,
           roomName: partyName,
           role: 'host',
           myUsername: hostNameClean,
-          backendHost: backendHost
+          backendHost: backendHost,
+          password: cleanPassword || undefined
         }));
 
         // Clear password state
@@ -764,7 +824,8 @@ function App() {
           roomName: res.room.roomName,
           role: 'guest',
           myUsername: res.username,
-          backendHost: backendHost
+          backendHost: backendHost,
+          password: joinPassword.trim() || undefined
         }));
 
         // Clear password state
