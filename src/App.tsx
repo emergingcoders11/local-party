@@ -137,27 +137,36 @@ function App() {
 
   const [isScanningQR, setIsScanningQR] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  
+  const isLocalHostAddress = (hostStr: string) => {
+    const clean = hostStr.replace(/^https?:\/\//, '').split(':')[0];
+    return ['localhost', '127.0.0.1', '::1'].includes(clean) || 
+      clean.startsWith('192.168.') || 
+      clean.startsWith('10.') || 
+      clean.startsWith('172.');
+  };
+
   const [backendHost, setBackendHost] = useState<string>(() => {
     const saved = localStorage.getItem('backend_host');
-    const defaultHost = (import.meta.env.VITE_BACKEND_HOST as string) || window.location.hostname;
-    const currentHost = window.location.hostname;
-    const isCurrentLoopback = ['localhost', '127.0.0.1', '::1'].includes(currentHost);
-    
-    if (!isCurrentLoopback) {
-      if (saved && !['localhost', '127.0.0.1', '::1'].includes(saved)) {
-        return saved;
-      }
-      return defaultHost;
-    }
-    return saved || defaultHost;
+    if (saved) return saved;
+
+    const envHost = import.meta.env.VITE_BACKEND_HOST as string;
+    if (envHost) return envHost;
+
+    const hostname = window.location.hostname;
+    // Auto prefill port :3001 if local IP or localhost
+    const isIpOrLocal = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.');
+    return isIpOrLocal ? `${hostname}:3001` : hostname;
   });
   const [isHostOnline, setIsHostOnline] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [ipInput, setIpInput] = useState(backendHost);
-  
-  // Sync ipInput with backendHost when it changes (e.g. on session restore)
+  const [isLocalDiscoveryOnly, setIsLocalDiscoveryOnly] = useState(() => isLocalHostAddress(backendHost));
+
+  // Sync ipInput and isLocalDiscoveryOnly when backendHost changes
   useEffect(() => {
     setIpInput(backendHost);
+    setIsLocalDiscoveryOnly(isLocalHostAddress(backendHost));
   }, [backendHost]);
   
   // Refs
@@ -415,15 +424,45 @@ function App() {
     }
   }, [currentSong, isPlayerReady]);
 
-  // Sync mute state for Everyone
+  // Sync mute state for Everyone (with explicit volume set to prevent silent unmutes)
   useEffect(() => {
     if (!ytPlayerRef.current || !isPlayerReady) return;
-    if (isMuted) {
-      ytPlayerRef.current.mute();
-    } else {
-      ytPlayerRef.current.unMute();
+    try {
+      if (isMuted) {
+        if (typeof ytPlayerRef.current.mute === 'function') {
+          ytPlayerRef.current.mute();
+        }
+      } else {
+        if (typeof ytPlayerRef.current.unMute === 'function') {
+          ytPlayerRef.current.unMute();
+        }
+        if (typeof ytPlayerRef.current.setVolume === 'function') {
+          ytPlayerRef.current.setVolume(50);
+        }
+      }
+    } catch (e) {
+      console.warn("Error setting volume/mute state:", e);
     }
   }, [isMuted, isPlayerReady]);
+
+  // Handle global mouse/touch release for progress slider seeking
+  useEffect(() => {
+    const handleGlobalRelease = () => {
+      if (isDraggingProgressRef.current) {
+        isDraggingProgressRef.current = false;
+        if (socketRef.current) {
+          socketRef.current.emit('playback:seek', { progress: latestProgressRef.current });
+        }
+      }
+    };
+
+    window.addEventListener('mouseup', handleGlobalRelease);
+    window.addEventListener('touchend', handleGlobalRelease);
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalRelease);
+      window.removeEventListener('touchend', handleGlobalRelease);
+    };
+  }, []);
 
   // Host-only: Periodically emit playback progress updates to sync guests
   useEffect(() => {
@@ -841,11 +880,20 @@ function App() {
     }
   };
 
+  const handleSeekOffset = (offset: number) => {
+    if (!currentSong || !socketRef.current) return;
+    const newProgress = Math.max(0, Math.min(currentSong.duration, playbackProgress + offset));
+    updatePlaybackProgress(newProgress);
+    socketRef.current.emit('playback:seek', { progress: newProgress });
+  };
+
   // Discovery Action: Fetch Nearby Rooms
-  const fetchNearbyRooms = async (silent = false) => {
+  const fetchNearbyRooms = async (silent = false, forceLocal = false) => {
     try {
       const serverUrl = getServerUrl(backendHost);
-      const res = await fetch(`${serverUrl}/api/rooms`);
+      const useLocalParam = forceLocal || isLocalDiscoveryOnly || isLocalHostAddress(backendHost);
+      const queryParam = useLocalParam ? '?local=true' : '';
+      const res = await fetch(`${serverUrl}/api/rooms${queryParam}`);
       if (res.ok) {
         const data = await res.json();
         setDiscoveredRooms(data);
@@ -869,7 +917,7 @@ function App() {
       const interval = setInterval(() => fetchNearbyRooms(true), 5000);
       return () => clearInterval(interval);
     }
-  }, [currentView, backendHost]);
+  }, [currentView, backendHost, isLocalDiscoveryOnly]);
 
   const selectDiscoveredRoom = (code: string) => {
     setRoomCodeInput(code);
@@ -884,14 +932,22 @@ function App() {
       showToast('Server IP address is required.', 'error');
       return;
     }
+
+    let formattedHost = cleanIp;
+    if (!formattedHost.includes('://')) {
+      if (!formattedHost.includes(':')) {
+        formattedHost = `${formattedHost}:3001`;
+      }
+    }
+
     // Disconnect active socket if server IP changes so next connection uses the new IP
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
     }
-    setBackendHost(cleanIp);
-    localStorage.setItem('backend_host', cleanIp);
-    showToast(`Server Host IP set to: ${cleanIp}`, 'success');
+    setBackendHost(formattedHost);
+    localStorage.setItem('backend_host', formattedHost);
+    showToast(`Server Host IP set to: ${formattedHost}`, 'success');
     setShowSettings(false);
   };
 
@@ -984,7 +1040,20 @@ function App() {
         </div>
       </header>
 
-      <main className="flex-1 w-full max-w-7xl mx-auto px-6 py-8 flex flex-col justify-center items-center z-10 relative">
+      <div className="w-full flex-1 flex z-10 relative max-w-[1600px] mx-auto px-6 gap-6">
+        {/* Left Sidebar Ad Slot - Desktop only */}
+        <div className="hidden xl:flex w-[200px] flex-shrink-0 flex-col gap-4 py-8">
+          <div className="glass-panel p-4 rounded-2xl border border-white/5 h-[600px] sticky top-[100px] flex flex-col items-center justify-center text-center text-spotify-text text-xxs font-bold uppercase tracking-wider">
+            <span className="text-white/20 mb-3 block">Sponsored Ad</span>
+            <div className="flex-grow w-full bg-white/2 rounded-xl border border-white/5 flex flex-col items-center justify-center p-4">
+              <span className="text-white/10 font-bold mb-1">LocalParty</span>
+              <span className="text-white/5 font-semibold text-[10px] normal-case text-center">Synchronized Playback Worldwide</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Central main content area */}
+        <main className="flex-1 w-full max-w-5xl py-8 flex flex-col justify-center items-center relative min-w-0">
         <AnimatePresence mode="wait">
           
           {/* VIEW: LANDING PAGE */}
@@ -1000,7 +1069,7 @@ function App() {
               {/* Hero Label */}
               <div className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-spotify-green/10 border border-spotify-green/20 text-spotify-green text-xs font-extrabold mb-6 tracking-wide uppercase">
                 <Sparkles className="w-3.5 h-3.5" />
-                Next-Gen Surprise Playlist System
+                Next-Gen Global & LAN Surprise Playlist System
               </div>
 
               {/* Tagline */}
@@ -1008,8 +1077,8 @@ function App() {
                 Music becomes more fun when the next song is a <span className="bg-gradient-to-r from-spotify-green to-emerald-400 bg-clip-text text-transparent text-glow">surprise</span>.
               </h1>
               
-              <p className="text-spotify-text text-lg md:text-xl max-w-xl mb-10 font-medium leading-relaxed">
-                Connect your party to a single local WiFi. Let guests add tracks, but keep the upcoming queue hidden. Experience pure playlist suspense!
+              <p className="text-spotify-text text-lg md:text-xl max-w-2xl mb-10 font-medium leading-relaxed">
+                Synchronized music rooms for any crowd. Host a session globally or locally over Wi-Fi. Guests add tracks anonymously while the queue remains hidden. Let the suspense play out!
               </p>
 
               {/* CTA Actions */}
@@ -1106,11 +1175,11 @@ function App() {
 
                 <div className="glass-card p-6 rounded-2xl text-left">
                   <div className="w-12 h-12 rounded-xl bg-spotify-green/10 text-spotify-green flex items-center justify-center mb-4">
-                    <Users className="w-6 h-6" />
+                    <Compass className="w-6 h-6" />
                   </div>
-                  <h3 className="text-lg font-bold mb-2">WiFi-based Discovery</h3>
+                  <h3 className="text-lg font-bold mb-2">Global & LAN Discovery</h3>
                   <p className="text-spotify-text text-sm leading-relaxed">
-                    Easily discover active rooms running on the same local network without registration or password prompts.
+                    Host rooms globally or locally over LAN. Connect seamlessly via room codes, QR codes, or automatic Wi-Fi network detection.
                   </p>
                 </div>
 
@@ -1467,7 +1536,7 @@ function App() {
               </div>
 
               {/* Room Search Input */}
-              <div className="relative mb-6">
+              <div className="relative mb-4">
                 <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-spotify-text">
                   <Search className="w-4 h-4" />
                 </span>
@@ -1486,6 +1555,25 @@ function App() {
                     <X className="w-4 h-4" />
                   </button>
                 )}
+              </div>
+
+              {/* Local Wi-Fi filter toggle */}
+              <div className="flex items-center justify-between p-3.5 bg-white/5 rounded-xl border border-white/5 mb-6 text-xs">
+                <span className="font-semibold text-spotify-text">Only Show Parties on My Wi-Fi Network</span>
+                <button
+                  type="button"
+                  onClick={() => setIsLocalDiscoveryOnly(!isLocalDiscoveryOnly)}
+                  className={`w-10 h-6 rounded-full p-0.5 transition-colors duration-300 focus:outline-hidden cursor-pointer flex items-center ${
+                    isLocalDiscoveryOnly ? 'bg-spotify-green' : 'bg-white/10'
+                  }`}
+                  aria-label="Toggle local network filter"
+                >
+                  <div
+                    className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-300 ${
+                      isLocalDiscoveryOnly ? 'translate-x-4' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
 
               {filteredDiscoveredRooms.length === 0 ? (
@@ -1673,8 +1761,35 @@ function App() {
                   </div>
 
                   {/* Controller Playback Panel */}
-                  <div className="w-full flex items-center justify-center gap-6 mt-8">
-                    {/* Play/Pause Button for Everyone */}
+                  <div className="w-full flex items-center justify-center gap-4 mt-8 flex-wrap">
+                    {/* Mute output button */}
+                    <button
+                      onClick={() => setIsMuted(!isMuted)}
+                      className={`p-2.5 rounded-full transition border cursor-pointer ${
+                        isMuted 
+                          ? 'bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20' 
+                          : 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10'
+                      }`}
+                      title={userRole === 'host' ? (isMuted ? 'Unmute host device' : 'Mute host device') : (isMuted ? 'Unmute local player' : 'Mute local player')}
+                    >
+                      {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                    </button>
+
+                    {/* Seek Backward 10s */}
+                    <button
+                      onClick={() => handleSeekOffset(-10)}
+                      disabled={!currentSong}
+                      className={`px-3 py-2 rounded-full transition border font-mono text-xs font-bold cursor-pointer ${
+                        currentSong 
+                          ? 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10' 
+                          : 'border-white/5 text-white/10 cursor-not-allowed'
+                      }`}
+                      title="Seek backward 10 seconds"
+                    >
+                      -10s
+                    </button>
+
+                    {/* Play/Pause Button */}
                     <button
                       onClick={handlePlayPause}
                       disabled={!currentSong}
@@ -1688,57 +1803,40 @@ function App() {
                       {isPlaying ? <Pause className="w-6 h-6 fill-current stroke-[3]" /> : <Play className="w-6 h-6 fill-current stroke-[3] translate-x-0.5" />}
                     </button>
 
+                    {/* Seek Forward 10s */}
+                    <button
+                      onClick={() => handleSeekOffset(10)}
+                      disabled={!currentSong}
+                      className={`px-3 py-2 rounded-full transition border font-mono text-xs font-bold cursor-pointer ${
+                        currentSong 
+                          ? 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10' 
+                          : 'border-white/5 text-white/10 cursor-not-allowed'
+                      }`}
+                      title="Seek forward 10 seconds"
+                    >
+                      +10s
+                    </button>
+
                     {userRole === 'host' ? (
-                      <>
-                        {/* Mute output button */}
-                        <button
-                          onClick={() => setIsMuted(!isMuted)}
-                          className={`p-2.5 rounded-full transition border cursor-pointer ${
-                            isMuted 
-                              ? 'bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20' 
-                              : 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10'
-                          }`}
-                          title={isMuted ? 'Unmute host device' : 'Mute host device'}
-                        >
-                          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                        </button>
-
-                        <button
-                          onClick={handleSkip}
-                          disabled={!currentSong && hostQueue.length === 0}
-                          className={`p-3 rounded-full border transition ${
-                            (currentSong || hostQueue.length > 0)
-                              ? 'bg-white/5 border-white/5 text-white hover:bg-white/10 hover:border-white/10 cursor-pointer'
-                              : 'border-white/5 text-white/20 cursor-not-allowed'
-                          }`}
-                          title="Skip song"
-                        >
-                          <SkipForward className="w-5 h-5 fill-current" />
-                        </button>
-                      </>
+                      <button
+                        onClick={handleSkip}
+                        disabled={!currentSong && hostQueue.length === 0}
+                        className={`p-3 rounded-full border transition ${
+                          (currentSong || hostQueue.length > 0)
+                            ? 'bg-white/5 border-white/5 text-white hover:bg-white/10 hover:border-white/10 cursor-pointer'
+                            : 'border-white/5 text-white/20 cursor-not-allowed'
+                        }`}
+                        title="Skip to next song"
+                      >
+                        <SkipForward className="w-5 h-5 fill-current" />
+                      </button>
                     ) : (
-                      <>
-                        {/* Mute output button for Guest */}
-                        <button
-                          onClick={() => setIsMuted(!isMuted)}
-                          className={`p-2.5 rounded-full transition border cursor-pointer ${
-                            isMuted 
-                              ? 'bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20' 
-                              : 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10'
-                          }`}
-                          title={isMuted ? 'Unmute local player' : 'Mute local player'}
-                        >
-                          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                        </button>
-
-                        {/* Guest View Suggest Track Action */}
-                        <button
-                          onClick={() => setIsSearchOpen(true)}
-                          className="px-6 py-3.5 rounded-full bg-spotify-green text-black font-extrabold flex items-center justify-center gap-2 hover:scale-105 active:scale-95 transition shadow-lg cursor-pointer text-sm"
-                        >
-                          <Plus className="w-4 h-4 stroke-[3]" /> Suggest a Song
-                        </button>
-                      </>
+                      <button
+                        onClick={() => setIsSearchOpen(true)}
+                        className="px-5 py-2.5 rounded-full bg-spotify-green text-black font-extrabold flex items-center justify-center gap-1.5 hover:scale-105 active:scale-95 transition shadow-lg cursor-pointer text-xs"
+                      >
+                        <Plus className="w-4 h-4 stroke-[3]" /> Suggest
+                      </button>
                     )}
                   </div>
                 </div>
@@ -1875,6 +1973,18 @@ function App() {
 
         </AnimatePresence>
       </main>
+
+      {/* Right Sidebar Ad Slot - Desktop only */}
+      <div className="hidden xl:flex w-[200px] flex-shrink-0 flex-col gap-4 py-8">
+        <div className="glass-panel p-4 rounded-2xl border border-white/5 h-[600px] sticky top-[100px] flex flex-col items-center justify-center text-center text-spotify-text text-xxs font-bold uppercase tracking-wider">
+          <span className="text-white/20 mb-3 block">Sponsored Ad</span>
+          <div className="flex-grow w-full bg-white/2 rounded-xl border border-white/5 flex flex-col items-center justify-center p-4">
+            <span className="text-white/10 font-bold mb-1">Zero Latency</span>
+            <span className="text-white/5 font-semibold text-[10px] normal-case text-center">Host local rooms on your network</span>
+          </div>
+        </div>
+      </div>
+    </div>
 
       {/* Global Bottom sticky banner for music discovery when not in player */}
       {currentView === 'landing' && discoveredRooms.length > 0 && (

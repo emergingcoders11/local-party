@@ -188,7 +188,34 @@ const LOCAL_IP = getLocalIpAddress();
 
 // Expose discovery API
 app.get('/api/rooms', (req, res) => {
-  const activeRooms = Array.from(rooms.values()).map(room => ({
+  const isLocalOnly = req.query.local === 'true';
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+
+  let roomList = Array.from(rooms.values());
+
+  if (isLocalOnly) {
+    roomList = roomList.filter(room => {
+      // Find host user's IP
+      const hostUser = room.users.find(u => u.isHost);
+      const hostIp = hostUser ? hostUser.ip : null;
+
+      if (!hostIp) return false;
+
+      // If client is loopback, match loopback IPs
+      const isClientLoopback = clientIp === '::1' || clientIp === '127.0.0.1' || clientIp.includes('::ffff:127.0.0.1');
+      const isHostLoopback = hostIp === '::1' || hostIp === '127.0.0.1' || hostIp.includes('::ffff:127.0.0.1');
+      if (isClientLoopback && isHostLoopback) {
+        return true;
+      }
+
+      // Otherwise, match exact external IPs (which are identical for users sharing NAT/Wi-Fi router)
+      const normClientIp = clientIp.replace(/^::ffff:/, '');
+      const normHostIp = hostIp.replace(/^::ffff:/, '');
+      return normClientIp === normHostIp;
+    });
+  }
+
+  const activeRooms = roomList.map(room => ({
     roomCode: room.roomCode,
     roomName: room.roomName,
     hostName: room.hostName,
