@@ -156,7 +156,12 @@ function App() {
     const hostname = window.location.hostname;
     // Auto prefill port :3001 if local IP or localhost
     const isIpOrLocal = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.');
-    return isIpOrLocal ? `${hostname}:3001` : hostname;
+    
+    if (isIpOrLocal) {
+      return `${hostname}:3001`;
+    }
+    // Default global production backend
+    return 'local-party-backend.onrender.com';
   });
   const [isHostOnline, setIsHostOnline] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
@@ -1041,8 +1046,8 @@ function App() {
       </header>
 
       <div className="w-full flex-1 flex z-10 relative max-w-[1600px] mx-auto px-6 gap-6">
-        {/* Left Sidebar Ad Slot - Desktop only */}
-        <div className="hidden xl:flex w-[200px] flex-shrink-0 flex-col gap-4 py-8">
+        {/* Left Sidebar Ad Slot - Hidden (will work on it later) */}
+        <div className="hidden w-[200px] flex-shrink-0 flex-col gap-4 py-8">
           <div className="glass-panel p-4 rounded-2xl border border-white/5 h-[600px] sticky top-[100px] flex flex-col items-center justify-center text-center text-spotify-text text-xxs font-bold uppercase tracking-wider">
             <span className="text-white/20 mb-3 block">Sponsored Ad</span>
             <div className="flex-grow w-full bg-white/2 rounded-xl border border-white/5 flex flex-col items-center justify-center p-4">
@@ -1974,8 +1979,8 @@ function App() {
         </AnimatePresence>
       </main>
 
-      {/* Right Sidebar Ad Slot - Desktop only */}
-      <div className="hidden xl:flex w-[200px] flex-shrink-0 flex-col gap-4 py-8">
+      {/* Right Sidebar Ad Slot - Hidden (will work on it later) */}
+      <div className="hidden w-[200px] flex-shrink-0 flex-col gap-4 py-8">
         <div className="glass-panel p-4 rounded-2xl border border-white/5 h-[600px] sticky top-[100px] flex flex-col items-center justify-center text-center text-spotify-text text-xxs font-bold uppercase tracking-wider">
           <span className="text-white/20 mb-3 block">Sponsored Ad</span>
           <div className="flex-grow w-full bg-white/2 rounded-xl border border-white/5 flex flex-col items-center justify-center p-4">

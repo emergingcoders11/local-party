@@ -17,7 +17,15 @@ const io = new Server(httpServer, {
 app.use(cors());
 app.use(express.json());
 
-// In-memory data store
+// Root Redirect for Browser Requests, API Status for Health Checks
+app.get('/', (req, res) => {
+  const acceptHeader = req.headers.accept || '';
+  if (acceptHeader.includes('text/html')) {
+    res.redirect('https://local-party.vercel.app/');
+  } else {
+    res.json({ status: 'ok', service: 'local-party-backend' });
+  }
+});
 const rooms = new Map();
 const roomDisconnectTimers = new Map();
 

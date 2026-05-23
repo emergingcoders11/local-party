@@ -1,25 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://local-party.onrender.com/</loc>
+    <loc>https://local-party.vercel.app/</loc>
     <lastmod>2026-05-23</lastmod>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://local-party.onrender.com/?view=discovery</loc>
+    <loc>https://local-party.vercel.app/?view=discovery</loc>
     <lastmod>2026-05-23</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://local-party.onrender.com/?view=join-room</loc>
+    <loc>https://local-party.vercel.app/?view=join-room</loc>
     <lastmod>2026-05-23</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://local-party.onrender.com/?view=create-room</loc>
+    <loc>https://local-party.vercel.app/?view=create-room</loc>
     <lastmod>2026-05-23</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
