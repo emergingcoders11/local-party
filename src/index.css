@@ -71,3 +71,51 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+@keyframes visualizer-bounce {
+  0% {
+    transform: scaleY(0.15);
+    height: 15%;
+  }
+  100% {
+    transform: scaleY(1);
+    height: 100%;
+  }
+}
+
+.animate-spin-slow {
+  animation: spin 15s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Mobile responsive layout overrides and smooth tap target styling */
+@media (max-width: 640px) {
+  .glass-panel {
+    padding: 1.25rem !important;
+    border-radius: 1.25rem !important;
+  }
+  .glass-card {
+    padding: 1rem !important;
+    border-radius: 1rem !important;
+  }
+  h2 {
+    font-size: 1.5rem !important;
+  }
+  h3 {
+    font-size: 1.15rem !important;
+  }
+  button, input, select {
+    min-height: 44px; /* Standard accessible touch target size */
+  }
+  input[type="range"] {
+    height: 12px;
+  }
+}

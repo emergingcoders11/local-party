@@ -25,13 +25,17 @@ export const InactivityWarningModal: React.FC<InactivityWarningModalProps> = ({
       };
       dialog.addEventListener('cancel', handleCancel);
       
-      dialog.showModal();
+      if (!dialog.open) {
+        dialog.showModal();
+      }
       
       return () => {
         dialog.removeEventListener('cancel', handleCancel);
       };
     } else {
-      dialog.close();
+      if (dialog.open) {
+        dialog.close();
+      }
     }
   }, [isOpen]);
 

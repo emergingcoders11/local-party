@@ -154,6 +154,204 @@ function destroyRoomDueToInactivity(roomCode) {
   rooms.delete(roomCode);
 }
 
+function logRoomEvent(room, message) {
+  if (!room) return;
+  if (!room.auditLog) {
+    room.auditLog = [];
+  }
+  const timestamp = new Date().toISOString();
+  const entry = `[${timestamp}] ${message}`;
+  room.auditLog.push(entry);
+  console.log(`[Room ${room.roomCode} LOG] ${message}`);
+}
+
+const FALLBACK_SONGS = [
+  {
+    id: "s1",
+    title: "Helix Echoes",
+    artist: "SoundHelix Band",
+    album: "Electronic Odyssey",
+    duration: 372,
+    albumArt: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+  },
+  {
+    id: "s2",
+    title: "Neon Skyline",
+    artist: "SoundHelix Band",
+    album: "Retro Waves",
+    duration: 425,
+    albumArt: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3"
+  },
+  {
+    id: "s3",
+    title: "Sunset Groove",
+    artist: "SoundHelix Band",
+    album: "Chill Lounge",
+    duration: 344,
+    albumArt: "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
+  },
+  {
+    id: "s4",
+    title: "Synthwave Dreams",
+    artist: "SoundHelix Band",
+    album: "Futuristic Horizon",
+    duration: 302,
+    albumArt: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3"
+  },
+  {
+    id: "s5",
+    title: "Midnight City",
+    artist: "SoundHelix Band",
+    album: "Vapor Trails",
+    duration: 363,
+    albumArt: "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3"
+  },
+  {
+    id: "s6",
+    title: "Summer Jam",
+    artist: "SoundHelix Band",
+    album: "Beach Vibin",
+    duration: 312,
+    albumArt: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3"
+  },
+  {
+    id: "s7",
+    title: "Deep Bass Quest",
+    artist: "SoundHelix Band",
+    album: "Sub Woofer",
+    duration: 382,
+    albumArt: "https://images.unsplash.com/photo-1516280440614-37939bbacd6a?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3"
+  },
+  {
+    id: "s8",
+    title: "Cosmic Voyage",
+    artist: "SoundHelix Band",
+    album: "Galaxy Travel",
+    duration: 334,
+    albumArt: "https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3"
+  }
+];
+
+function playFallbackSong(room, roomCode, previousSong) {
+  const availableFallbacks = FALLBACK_SONGS.filter(s => !previousSong || (s.url !== previousSong.url && s.id !== previousSong.id));
+  const fallback = availableFallbacks.length > 0 
+    ? availableFallbacks[Math.floor(Math.random() * availableFallbacks.length)]
+    : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+
+  const autoplaySong = {
+    ...fallback,
+    id: Math.random().toString(36).substring(2, 9),
+    addedBy: 'Autoplay Fallback',
+    addedAt: Date.now()
+  };
+
+  room.currentSong = {
+    ...autoplaySong,
+    isPlaying: true,
+    progress: 0,
+    startTime: Date.now()
+  };
+
+  console.log(`[Autoplay Fallback] Playing song: "${autoplaySong.title}" in room ${roomCode}`);
+  io.to(roomCode).emit('song:change', room.currentSong);
+  logRoomEvent(room, `Autoplay fallback started song: "${autoplaySong.title}"`);
+}
+
+async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
+  if (!room || !currentSongOrLastPlayed) return;
+  if (!room.autoplayQueue) room.autoplayQueue = [];
+
+  // If the autoplay queue already has 5 or more songs, we don't need to do anything
+  if (room.autoplayQueue.length >= 5) {
+    // Send updated autoplay queue to host
+    io.to(room.hostSocketId).emit('autoplayQueue:update', room.autoplayQueue);
+    return;
+  }
+
+  try {
+    const query = `${currentSongOrLastPlayed.title} ${currentSongOrLastPlayed.artist || ''} related music`;
+    console.log(`[Autoplay Queue] Replenishing. Searching related songs for: "${query}"`);
+
+    const r = await yts(query);
+    const videos = r.videos || [];
+
+    if (!room.playedHistory) room.playedHistory = [];
+
+    // Filter out videos already in queue, autoplay queue, playedHistory, or active song
+    let candidates = videos.filter(v => {
+      const isSelf = v.videoId === currentSongOrLastPlayed.url || v.videoId === currentSongOrLastPlayed.id;
+      const inHistory = room.playedHistory.includes(v.videoId);
+      const inQueue = room.queue.some(q => q.url === v.videoId);
+      const inAutoplay = room.autoplayQueue.some(q => q.url === v.videoId);
+      return !isSelf && !inHistory && !inQueue && !inAutoplay;
+    });
+
+    if (candidates.length === 0 && room.playedHistory.length > 0) {
+      room.playedHistory = [];
+      candidates = videos.filter(v => {
+        const isSelf = v.videoId === currentSongOrLastPlayed.url || v.videoId === currentSongOrLastPlayed.id;
+        const inQueue = room.queue.some(q => q.url === v.videoId);
+        const inAutoplay = room.autoplayQueue.some(q => q.url === v.videoId);
+        return !isSelf && !inQueue && !inAutoplay;
+      });
+    }
+
+    const needed = 5 - room.autoplayQueue.length;
+    const addedCount = Math.min(needed, candidates.length);
+
+    for (let i = 0; i < addedCount; i++) {
+      const v = candidates[i];
+      const autoplaySong = {
+        id: v.videoId,
+        title: v.title,
+        artist: (v.author && v.author.name) || 'Autoplay Artist',
+        album: 'Autoplay Related',
+        duration: v.seconds || 180,
+        albumArt: v.thumbnail || v.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80',
+        url: v.videoId,
+        addedBy: 'Autoplay',
+        addedAt: Date.now()
+      };
+      room.autoplayQueue.push(autoplaySong);
+    }
+
+    // Fallback to pre-defined mock tracks if still empty or deficient
+    while (room.autoplayQueue.length < 5) {
+      const mock = FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+      room.autoplayQueue.push({
+        ...mock,
+        id: Math.random().toString(36).substring(2, 9),
+        addedBy: 'Autoplay Fallback',
+        addedAt: Date.now()
+      });
+    }
+
+    // Broadcast updated autoplay queue to host
+    io.to(room.hostSocketId).emit('autoplayQueue:update', room.autoplayQueue);
+  } catch (err) {
+    console.error(`[Autoplay Queue] Error replenishing queue for room ${roomCode}:`, err);
+    // Fill with fallback tracks
+    while (room.autoplayQueue.length < 5) {
+      const mock = FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+      room.autoplayQueue.push({
+        ...mock,
+        id: Math.random().toString(36).substring(2, 9),
+        addedBy: 'Autoplay Fallback',
+        addedAt: Date.now()
+      });
+    }
+    io.to(room.hostSocketId).emit('autoplayQueue:update', room.autoplayQueue);
+  }
+}
+
 async function playRelatedSong(roomCode, previousSong) {
   const room = rooms.get(roomCode);
   if (!room) return;
@@ -170,38 +368,33 @@ async function playRelatedSong(roomCode, previousSong) {
       };
       io.to(roomCode).emit('song:change', room.currentSong);
       io.to(room.hostSocketId).emit('queue:update', room.queue);
+      logRoomEvent(room, `Skipped to next queued song: "${nextSong.title}"`);
+      
+      // Fill the autoplayQueue based on this new active song!
+      fillAutoplayQueue(room, roomCode, room.currentSong);
       return;
     }
 
-    if (!previousSong) {
-      room.currentSong = null;
-      io.to(roomCode).emit('song:change', null);
-      return;
+    if (!room.playedHistory) {
+      room.playedHistory = [];
     }
 
-    // Search YouTube for related songs
-    const query = `${previousSong.title} ${previousSong.artist || ''} related music`;
-    console.log(`[Autoplay] Queue empty in room ${roomCode}. Searching related songs for: "${query}"`);
+    if (previousSong && previousSong.url) {
+      if (!room.playedHistory.includes(previousSong.url)) {
+        room.playedHistory.push(previousSong.url);
+      }
+      if (room.playedHistory.length > 15) {
+        room.playedHistory.shift();
+      }
+    }
 
-    const r = await yts(query);
-    const videos = r.videos || [];
+    // Populate autoplayQueue if it's empty
+    if (!room.autoplayQueue || room.autoplayQueue.length === 0) {
+      await fillAutoplayQueue(room, roomCode, previousSong || room.currentSong);
+    }
 
-    // Filter out the exact same video ID
-    const nextVideo = videos.find(v => v.videoId !== previousSong.id && v.videoId !== previousSong.url);
-
-    if (nextVideo) {
-      const autoplaySong = {
-        id: nextVideo.videoId,
-        title: nextVideo.title,
-        artist: (nextVideo.author && nextVideo.author.name) || 'Autoplay Artist',
-        album: 'Autoplay Related',
-        duration: nextVideo.seconds || 180,
-        albumArt: nextVideo.thumbnail || nextVideo.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80',
-        url: nextVideo.videoId,
-        addedBy: 'Autoplay',
-        addedAt: Date.now()
-      };
-
+    if (room.autoplayQueue && room.autoplayQueue.length > 0) {
+      const autoplaySong = room.autoplayQueue.shift();
       room.currentSong = {
         ...autoplaySong,
         isPlaying: true,
@@ -211,15 +404,18 @@ async function playRelatedSong(roomCode, previousSong) {
 
       console.log(`[Autoplay] Playing related song: "${autoplaySong.title}" in room ${roomCode}`);
       io.to(roomCode).emit('song:change', room.currentSong);
+      logRoomEvent(room, `Autoplay started related song: "${autoplaySong.title}"`);
+
+      // Asynchronously replenish the autoplayQueue
+      fillAutoplayQueue(room, roomCode, room.currentSong);
     } else {
-      console.log(`[Autoplay] No related songs found for room ${roomCode}`);
-      room.currentSong = null;
-      io.to(roomCode).emit('song:change', null);
+      // Autoplay fallback to SoundHelix mock catalog
+      console.log(`[Autoplay] No related songs found. Falling back to SoundHelix catalog...`);
+      playFallbackSong(room, roomCode, previousSong);
     }
   } catch (err) {
     console.error(`[Autoplay] Error finding related song for room ${roomCode}:`, err);
-    room.currentSong = null;
-    io.to(roomCode).emit('song:change', null);
+    playFallbackSong(room, roomCode, previousSong);
   }
 }
 
@@ -238,6 +434,16 @@ function getLocalIpAddress() {
     }
   }
   return 'localhost';
+}
+
+// Helper: Resolve real client IP from Socket handshake (reverse proxy aware)
+function getClientIp(socket) {
+  const headers = socket.handshake.headers;
+  const forwarded = headers['x-forwarded-for'] || headers['x-real-ip'] || headers['x-client-ip'];
+  if (forwarded) {
+    return forwarded.split(',')[0].trim();
+  }
+  return socket.handshake.address || '127.0.0.1';
 }
 
 const LOCAL_IP = getLocalIpAddress();
@@ -393,7 +599,28 @@ app.get('/api/search', rateLimiter, async (req, res) => {
 });
 
 
-// System name endpoint removed
+// Expose room audit logs (secured by room password verification)
+app.get('/api/rooms/:roomCode/logs', (req, res) => {
+  const roomCode = req.params.roomCode?.toUpperCase();
+  const password = req.query.password || null;
+
+  const room = rooms.get(roomCode);
+  if (!room) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+
+  // Validate room password if private
+  if (room.password && room.password !== password) {
+    return res.status(403).json({ error: 'Incorrect room password. Audit logs are protected.' });
+  }
+
+  res.json({
+    roomCode: room.roomCode,
+    roomName: room.roomName,
+    hostName: room.hostName,
+    logs: room.auditLog || []
+  });
+});
 
 // Socket.IO logic
 io.on('connection', (socket) => {
@@ -401,23 +628,38 @@ io.on('connection', (socket) => {
   let userName = null;
 
   // Create Room
-  socket.on('room:create', ({ roomName, hostName, password }, callback) => {
+  socket.on('room:create', ({ roomName, hostName, password, permissions }, callback) => {
     // Generate simple 5-digit room code
     let roomCode;
     do {
       roomCode = Math.random().toString(36).substring(2, 7).toUpperCase();
     } while (rooms.has(roomCode));
 
+    const defaultPermissions = {
+      allowGuestSkip: true,
+      allowGuestSeek: false,
+      allowGuestPlayPause: true,
+      guestMuteByDefault: true,
+      displayGuestVideo: false
+    };
+
     const room = {
       roomCode,
       roomName,
       hostSocketId: socket.id,
       hostName,
-      users: [{ socketId: socket.id, name: hostName, isHost: true, ip: socket.handshake.address }],
+      users: [{ socketId: socket.id, name: hostName, isHost: true, ip: getClientIp(socket) }],
       currentSong: null,
       queue: [],
+      autoplayQueue: [],
+      playedHistory: [],
+      auditLog: [],
       password: password || null,
-      lastActivityTime: Date.now()
+      lastActivityTime: Date.now(),
+      permissions: {
+        ...defaultPermissions,
+        ...(permissions || {})
+      }
     };
 
     rooms.set(roomCode, room);
@@ -426,7 +668,7 @@ io.on('connection', (socket) => {
     socket.join(roomCode);
     resetRoomActivity(roomCode);
 
-    console.log(`Room created: ${roomCode} by ${hostName} ("${roomName}")`);
+    logRoomEvent(room, `Room created by ${hostName} ("${roomName}")`);
     if (typeof callback === 'function') {
       callback({ success: true, roomCode, room, localIp: LOCAL_IP });
     }
@@ -466,13 +708,13 @@ io.on('connection', (socket) => {
     const userExists = room.users.some(u => u && u.name && u.name.toLowerCase() === joinName.toLowerCase());
     const finalName = userExists ? `${joinName} #${room.users.length + 1}` : joinName;
 
-    const newUser = { socketId: socket.id, name: finalName, isHost: false, ip: socket.handshake.address };
+    const newUser = { socketId: socket.id, name: finalName, isHost: false, ip: getClientIp(socket) };
     room.users.push(newUser);
     userRoomCode = code;
     userName = finalName;
     socket.join(code);
 
-    console.log(`User ${finalName} joined room: ${code}`);
+    logRoomEvent(room, `User ${finalName} joined room`);
 
     // Notify other users
     io.to(code).emit('room:user-update', room.users);
@@ -484,7 +726,8 @@ io.on('connection', (socket) => {
       roomName: room.roomName,
       hostName: room.hostName,
       users: room.users,
-      currentSong: room.currentSong
+      currentSong: room.currentSong,
+      permissions: room.permissions
     };
 
     if (typeof callback === 'function') {
@@ -528,7 +771,9 @@ io.on('connection', (socket) => {
       if (timer) {
         clearTimeout(timer);
         roomDisconnectTimers.delete(code);
-        console.log(`Host reconnected. Grace period cancelled for room: ${code}`);
+        logRoomEvent(room, `Host reconnected. Grace period cancelled.`);
+      } else {
+        logRoomEvent(room, `Host reconnected.`);
       }
 
       room.hostSocketId = socket.id;
@@ -538,7 +783,7 @@ io.on('connection', (socket) => {
       if (hostUser) {
         hostUser.socketId = socket.id;
       } else {
-        room.users.push({ socketId: socket.id, name: username, isHost: true, ip: socket.handshake.address });
+        room.users.push({ socketId: socket.id, name: username, isHost: true, ip: getClientIp(socket) });
       }
 
       // Notify guests that the host is back online
@@ -548,6 +793,7 @@ io.on('connection', (socket) => {
       const guestUser = room.users.find(u => u.name === username);
       if (guestUser) {
         guestUser.socketId = socket.id;
+        logRoomEvent(room, `Guest ${username} reconnected.`);
       } else {
         // Guest wasn't in the room before, they cannot bypass normal join
         if (typeof callback === 'function') {
@@ -570,7 +816,8 @@ io.on('connection', (socket) => {
       roomName: room.roomName,
       hostName: room.hostName,
       users: room.users,
-      currentSong: room.currentSong
+      currentSong: room.currentSong,
+      permissions: room.permissions
     };
 
     if (typeof callback === 'function') {
@@ -590,6 +837,18 @@ io.on('connection', (socket) => {
     const room = rooms.get(userRoomCode);
     if (!room) return;
 
+    // Concurrency / Duplicate track suggestion check
+    const isDuplicate = 
+      (room.currentSong && (room.currentSong.url === song.url || room.currentSong.id === song.id)) ||
+      room.queue.some(qSong => qSong.url === song.url || qSong.id === song.id);
+
+    if (isDuplicate) {
+      if (typeof callback === 'function') {
+        callback({ success: false, message: 'This song is already playing or in the queue!' });
+      }
+      return;
+    }
+
     const newSong = {
       ...song,
       id: Math.random().toString(36).substring(2, 9),
@@ -608,11 +867,14 @@ io.on('connection', (socket) => {
       
       // Notify all users in the room of the new playing song
       io.to(userRoomCode).emit('song:change', room.currentSong);
-      console.log(`Room ${userRoomCode}: Playing first suggested song "${newSong.title}"`);
+      logRoomEvent(room, `Playing first suggested song: "${newSong.title}" (added by ${newSong.addedBy})`);
+      
+      // Asynchronously pre-generate the autoplayQueue
+      fillAutoplayQueue(room, userRoomCode, room.currentSong);
     } else {
       // Otherwise put it in the queue
       room.queue.push(newSong);
-      console.log(`Room ${userRoomCode}: Added "${newSong.title}" to queue. Queue size is now ${room.queue.length}`);
+      logRoomEvent(room, `Added "${newSong.title}" to queue (suggested by ${newSong.addedBy})`);
     }
 
     resetRoomActivity(userRoomCode);
@@ -626,16 +888,23 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Play/Pause Song (Anyone)
+  // Play/Pause Song (Host or permitted Guest)
   socket.on('playback:state-change', ({ isPlaying }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room) return;
 
+    // Enforce host or guest play/pause permissions
+    if (room.hostSocketId !== socket.id && !room.permissions.allowGuestPlayPause) {
+      console.warn(`Unauthorized playback state-change request from guest socket: ${socket.id}`);
+      return;
+    }
+
     resetRoomActivity(userRoomCode);
 
     if (room.currentSong) {
       room.currentSong.isPlaying = isPlaying;
+      logRoomEvent(room, `Playback ${isPlaying ? 'resumed' : 'paused'} by ${room.hostSocketId === socket.id ? 'host' : 'guest ' + userName}`);
       // Broadcast update to everyone
       io.to(userRoomCode).emit('playback:sync', {
         isPlaying,
@@ -645,15 +914,22 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Progress Seek (Anyone)
+  // Progress Seek (Host or permitted Guest)
   socket.on('playback:seek', ({ progress }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || !room.currentSong) return;
 
+    // Enforce host or guest seek permissions
+    if (room.hostSocketId !== socket.id && !room.permissions.allowGuestSeek) {
+      console.warn(`Unauthorized seek request from guest socket: ${socket.id}`);
+      return;
+    }
+
     resetRoomActivity(userRoomCode);
 
     room.currentSong.progress = progress;
+    logRoomEvent(room, `Playback seeked to ${Math.round(progress)}s by ${room.hostSocketId === socket.id ? 'host' : 'guest ' + userName}`);
     // Broadcast seek event to everyone in the room
     io.to(userRoomCode).emit('playback:seek', {
       progress,
@@ -681,13 +957,26 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Host skips song (or song ends and auto-skips)
-  socket.on('song:skip', () => {
+  // Host or permitted Guest skips song (or song ends and auto-skips)
+  socket.on('song:skip', ({ songId } = {}) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
-    if (!room || room.hostSocketId !== socket.id) return;
+    if (!room) return;
+
+    // Enforce host or guest skip permissions
+    if (room.hostSocketId !== socket.id && !room.permissions.allowGuestSkip) {
+      console.warn(`Unauthorized skip request from guest socket: ${socket.id}`);
+      return;
+    }
+
+    // Bulletproof skip: Only skip if the request specifies the currently playing songId
+    if (songId && room.currentSong && room.currentSong.id !== songId) {
+      console.log(`Ignoring stale song:skip request for song ID: ${songId}. Current song ID: ${room.currentSong.id}`);
+      return;
+    }
 
     const previousSong = room.currentSong;
+    logRoomEvent(room, `Song skipped by ${room.hostSocketId === socket.id ? 'host' : 'guest ' + userName}: "${previousSong ? previousSong.title : 'None'}"`);
 
     if (room.queue.length > 0) {
       const nextSong = room.queue.shift();
@@ -697,14 +986,42 @@ io.on('connection', (socket) => {
         progress: 0,
         startTime: Date.now()
       };
-      console.log(`Room ${userRoomCode}: Skipping to next song "${nextSong.title}"`);
       // Broadcast new state
       io.to(userRoomCode).emit('song:change', room.currentSong);
       // Send updated queue to host
       io.to(room.hostSocketId).emit('queue:update', room.queue);
+      
+      // Asynchronously replenish prospective queue based on the new playing song!
+      fillAutoplayQueue(room, userRoomCode, room.currentSong);
     } else {
-      console.log(`Room ${userRoomCode}: Queue empty, starting autoplay...`);
       playRelatedSong(userRoomCode, previousSong);
+    }
+  });
+
+  // Playback Error reported by Host (e.g. copyright block, embedding disabled)
+  socket.on('playback:error', ({ songId, errorCode }) => {
+    if (!userRoomCode) return;
+    const room = rooms.get(userRoomCode);
+    if (!room || room.hostSocketId !== socket.id) return;
+
+    if (room.currentSong && room.currentSong.id === songId) {
+      logRoomEvent(room, `Playback error (${errorCode}) on song "${room.currentSong.title}". Triggering auto-skip.`);
+      
+      const previousSong = room.currentSong;
+
+      if (room.queue.length > 0) {
+        const nextSong = room.queue.shift();
+        room.currentSong = {
+          ...nextSong,
+          isPlaying: true,
+          progress: 0,
+          startTime: Date.now()
+        };
+        io.to(userRoomCode).emit('song:change', room.currentSong);
+        io.to(room.hostSocketId).emit('queue:update', room.queue);
+      } else {
+        playRelatedSong(userRoomCode, previousSong);
+      }
     }
   });
 
@@ -716,11 +1033,57 @@ io.on('connection', (socket) => {
 
     resetRoomActivity(userRoomCode);
 
+    const removedSong = room.queue.find(song => song.id === songId);
     room.queue = room.queue.filter(song => song.id !== songId);
-    console.log(`Room ${userRoomCode}: Removed song ${songId} from queue.`);
+    logRoomEvent(room, `Removed song from queue: "${removedSong ? removedSong.title : songId}"`);
     
     // Update queue list on Host
     io.to(room.hostSocketId).emit('queue:update', room.queue);
+  });
+
+  // Host reorders queue list
+  socket.on('queue:reorder', ({ queueIds }) => {
+    if (!userRoomCode) return;
+    const room = rooms.get(userRoomCode);
+    if (!room || room.hostSocketId !== socket.id) return;
+
+    resetRoomActivity(userRoomCode);
+
+    const reorderedQueue = [];
+    queueIds.forEach(id => {
+      const song = room.queue.find(q => q.id === id);
+      if (song) reorderedQueue.push(song);
+    });
+
+    // Make sure to add back any songs that were missed due to concurrency anomalies
+    room.queue.forEach(song => {
+      if (!reorderedQueue.some(q => q.id === song.id)) {
+        reorderedQueue.push(song);
+      }
+    });
+
+    room.queue = reorderedQueue;
+    logRoomEvent(room, "Host reordered active room queue");
+
+    // Broadcast updated queue to host
+    io.to(room.hostSocketId).emit('queue:update', room.queue);
+  });
+
+  // Host updates active room permissions dynamically
+  socket.on('room:update-permissions', ({ permissions }) => {
+    if (!userRoomCode) return;
+    const room = rooms.get(userRoomCode);
+    if (!room || room.hostSocketId !== socket.id) return;
+
+    room.permissions = {
+      ...room.permissions,
+      ...permissions
+    };
+
+    logRoomEvent(room, `Host updated active room permissions to: ${JSON.stringify(room.permissions)}`);
+
+    // Broadcast updated permissions to everyone in the room
+    io.to(userRoomCode).emit('room:permissions-update', room.permissions);
   });
 
   // Host kicks a user from the room
@@ -740,7 +1103,7 @@ io.on('connection', (socket) => {
     }
 
     const kickedName = kickedUser.name;
-    console.log(`Host kicked user: ${kickedName} from room ${userRoomCode}`);
+    logRoomEvent(room, `Host kicked user: "${kickedName}"`);
 
     // Remove user from the room's users list
     room.users = room.users.filter(u => u.socketId !== kickSocketId);
@@ -749,12 +1112,12 @@ io.on('connection', (socket) => {
     const prevQueueLength = room.queue.length;
     room.queue = room.queue.filter(song => song.addedBy !== kickedName);
     if (room.queue.length !== prevQueueLength) {
-      console.log(`Removed ${prevQueueLength - room.queue.length} songs from queue added by ${kickedName}`);
+      logRoomEvent(room, `Removed ${prevQueueLength - room.queue.length} queue songs suggested by kicked user "${kickedName}"`);
     }
 
     // If the currently playing song was added by the kicked user, skip it
     if (room.currentSong && room.currentSong.addedBy === kickedName) {
-      console.log(`Skipping current song added by kicked user: ${kickedName}`);
+      logRoomEvent(room, `Skipping current song suggested by kicked user: "${kickedName}"`);
       if (room.queue.length > 0) {
         const nextSong = room.queue.shift();
         room.currentSong = {
@@ -793,7 +1156,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(userRoomCode);
     if (!room) return;
 
-    console.log(`Activity continued in room ${userRoomCode} by user ${userName || socket.id}`);
+    logRoomEvent(room, `Room inactivity warning dismissed by user: "${userName || socket.id}"`);
     resetRoomActivity(userRoomCode);
     io.to(userRoomCode).emit('room:inactivity-cancelled');
   });
@@ -804,7 +1167,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
 
-    console.log(`Room ended: ${userRoomCode}`);
+    logRoomEvent(room, "Room session ended by host.");
 
     clearRoomTimers(userRoomCode);
 
@@ -829,7 +1192,7 @@ io.on('connection', (socket) => {
 
     if (room.hostSocketId === socket.id) {
       // Host disconnected: start grace period
-      console.log(`Host disconnected. Starting 15s grace period for room: ${userRoomCode}`);
+      logRoomEvent(room, "Host disconnected. Starting 15s grace period.");
       
       // Notify guests that host is temporarily offline
       io.to(userRoomCode).emit('room:host-status', { connected: false });
@@ -850,8 +1213,10 @@ io.on('connection', (socket) => {
       roomDisconnectTimers.set(userRoomCode, timer);
     } else {
       // Guest disconnected: remove user
+      const leavingUser = room.users.find(u => u && u.socketId === socket.id);
+      const disconnectedName = leavingUser ? leavingUser.name : 'Unknown Guest';
       room.users = room.users.filter(u => u && u.socketId !== socket.id);
-      console.log(`User left room ${userRoomCode}: socket ${socket.id}`);
+      logRoomEvent(room, `Guest left room: "${disconnectedName}"`);
       io.to(userRoomCode).emit('room:user-update', room.users);
       resetRoomActivity(userRoomCode);
     }

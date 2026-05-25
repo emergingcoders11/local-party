@@ -26,7 +26,11 @@ import {
   Wifi,
   Lock,
   X,
-  Search
+  Search,
+  ShieldAlert,
+  ArrowUp,
+  ArrowDown,
+  Upload
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SongSearchModal } from './components/SongSearchModal';
@@ -138,6 +142,19 @@ function App() {
   const [isScanningQR, setIsScanningQR] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   
+  // Customizable Guest Room Permissions
+  const [allowGuestSkip, setAllowGuestSkip] = useState(true);
+  const [allowGuestSeek, setAllowGuestSeek] = useState(false);
+  const [allowGuestPlayPause, setAllowGuestPlayPause] = useState(true);
+  const [guestMuteByDefault, setGuestMuteByDefault] = useState(true);
+  const [displayGuestVideo, setDisplayGuestVideo] = useState(false);
+
+  // Active Session Permissions & prospective autoplay states
+  const [roomPermissions, setRoomPermissions] = useState<any>(null);
+  const [autoplayQueue, setAutoplayQueue] = useState<PlayableSong[]>([]);
+  const [showPermissionsConfig, setShowPermissionsConfig] = useState(false);
+  const [isArchived, setIsArchived] = useState(false);
+
   const isLocalHostAddress = (hostStr: string) => {
     const clean = hostStr.replace(/^https?:\/\//, '').split(':')[0];
     return ['localhost', '127.0.0.1', '::1'].includes(clean) || 
@@ -193,6 +210,8 @@ function App() {
   const currentSongRef = useRef<PlayableSong | null>(null);
   const isDraggingProgressRef = useRef(false);
   const loadedVideoIdRef = useRef<string>('');
+  const watchdogCountRef = useRef<number>(0);
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const userRoleRef = useRef<string | null>(null);
   const currentViewRef = useRef<string>('landing');
@@ -340,8 +359,17 @@ function App() {
             if (event.data === 0) { // ENDED
               console.log("YouTube track ended. Skipping.");
               if (userRole === 'host' && socketRef.current) {
-                socketRef.current.emit('song:skip');
+                socketRef.current.emit('song:skip', { songId: currentSongRef.current?.id });
               }
+            }
+          },
+          onError: (event: any) => {
+            console.error("YouTube Player Error:", event.data);
+            if (userRole === 'host' && socketRef.current && currentSongRef.current) {
+              socketRef.current.emit('playback:error', {
+                songId: currentSongRef.current.id,
+                errorCode: event.data
+              });
             }
           }
         }
@@ -488,12 +516,29 @@ function App() {
         
         const playerState = player.getPlayerState();
         const isActuallyPlaying = playerState === 1;
+
+        // Watchdog: auto-skip if playing but stuck at 0s for 8s
+        // At 300ms intervals, 8 seconds is ~26 checks
+        if (isActuallyPlaying && progress === 0) {
+          watchdogCountRef.current += 1;
+          if (watchdogCountRef.current >= 26) {
+            console.warn("Watchdog detected frozen playback (stuck at 0 for 8s). Triggering auto-skip.");
+            watchdogCountRef.current = 0;
+            socketRef.current.emit('playback:error', {
+              songId: currentSong.id,
+              errorCode: 'watchdog_timeout'
+            });
+          }
+        } else {
+          watchdogCountRef.current = 0;
+        }
+
         socketRef.current.emit('playback:progress-update', {
           progress,
           isPlaying: isActuallyPlaying
         });
       }
-    }, 1000);
+    }, 300);
 
     return () => {
       if (progressIntervalRef.current) {
@@ -502,6 +547,18 @@ function App() {
       }
     };
   }, [userRole, isPlaying, currentSong, isPlayerReady]);
+
+  // Local progression loop: smoothly increments progress slider locally by 0.1s every 100ms when playing
+  useEffect(() => {
+    if (!isPlaying || !currentSong) return;
+    
+    const interval = window.setInterval(() => {
+      if (isDraggingProgressRef.current) return;
+      updatePlaybackProgress(latestProgressRef.current + 0.1);
+    }, 100);
+    
+    return () => window.clearInterval(interval);
+  }, [isPlaying, currentSong]);
 
   const getServerUrl = (host: string) => {
     return host.includes('://') 
@@ -550,6 +607,8 @@ function App() {
               if (res.success) {
                 console.log(`Successfully reconnected to room ${savedRoomCode}`);
                 setUserRole(savedRole);
+                setRoomPermissions(res.room.permissions);
+                setAutoplayQueue(res.autoplayQueue || []);
                 if (savedRole === 'guest') {
                   setIsMuted(true);
                 }
@@ -595,6 +654,11 @@ function App() {
       setUsers(updatedUsers);
     });
 
+    socket.on('room:permissions-update', (updatedPermissions) => {
+      setRoomPermissions(updatedPermissions);
+      showToast('Room permissions updated by host', 'info');
+    });
+
     socket.on('song:change', (newSong: PlayableSong | null) => {
       setCurrentSong(newSong);
       if (newSong) {
@@ -622,10 +686,10 @@ function App() {
           player.pauseVideo();
         }
         
-        // For guest, also sync progress if they are too far off (e.g. > 3 seconds)
+        // For guest, also sync progress if they are too far off (e.g. > 1.2 seconds)
         if (userRoleRef.current !== 'host' && typeof player.getCurrentTime === 'function' && typeof player.seekTo === 'function') {
           const guestTime = player.getCurrentTime();
-          if (Math.abs(guestTime - progress) > 3) {
+          if (Math.abs(guestTime - progress) > 1.2) {
             player.seekTo(progress, true);
           }
         }
@@ -673,6 +737,10 @@ function App() {
       setHostQueue(updatedQueue);
     });
 
+    socket.on('autoplayQueue:update', (updatedAutoplayQueue: PlayableSong[]) => {
+      setAutoplayQueue(updatedAutoplayQueue);
+    });
+
     socket.on('room:inactivity-warning', ({ warningTimeoutMs }) => {
       setInactivityCountdown(Math.round(warningTimeoutMs / 1000));
       setIsInactivityWarningOpen(true);
@@ -683,7 +751,7 @@ function App() {
     });
 
     socket.on('room:destroyed-inactivity', () => {
-      showToast('The room was destroyed due to 1 hour of inactivity.', 'error');
+      setIsArchived(true);
       disconnectSession();
     });
 
@@ -717,6 +785,8 @@ function App() {
     updatePlaybackProgress(0);
     setIsPlaying(false);
     setHostQueue([]);
+    setAutoplayQueue([]);
+    setRoomPermissions(null);
     setIsHostOnline(true);
     setDiscoveredRooms([]);
     setRoomCodeInput('');
@@ -756,10 +826,19 @@ function App() {
     socket.emit('room:create', { 
       roomName: partyName, 
       hostName: hostNameClean,
-      password: isPrivateRoom ? roomPassword : null
+      password: isPrivateRoom ? roomPassword : null,
+      permissions: {
+        allowGuestSkip,
+        allowGuestSeek,
+        allowGuestPlayPause,
+        guestMuteByDefault,
+        displayGuestVideo
+      }
     }, (res: any) => {
       if (res.success) {
         setUserRole('host');
+        setRoomPermissions(res.room.permissions);
+        setAutoplayQueue([]);
         setRoomCode(res.roomCode);
         setRoomName(partyName);
         setHostLocalIp(res.localIp);
@@ -810,7 +889,10 @@ function App() {
     }, (res: any) => {
       if (res.success) {
         setUserRole('guest');
-        setIsMuted(true); // Default to muted to bypass autoplay policy
+        setRoomPermissions(res.room.permissions);
+        setAutoplayQueue([]);
+        // Initial mute state: default to muted if permissions specify guestMuteByDefault
+        setIsMuted(res.room.permissions?.guestMuteByDefault ?? true);
         setRoomCode(res.room.roomCode);
         setRoomName(res.room.roomName);
         setHostLocalIp(res.localIp);
@@ -854,21 +936,28 @@ function App() {
           showToast(`"${song.title}" suggested!`, 'success');
           resolve(true);
         } else {
-          showToast('Failed to add song.', 'error');
+          showToast(res.message || 'Failed to add song.', 'error');
           resolve(false);
         }
       });
     });
   };
 
-  // Playback Control: Play / Pause
-  const handlePlayPause = () => {
+  // Playback Control: Play / Pause (restricted by permissions)
+  const handlePlayPause = (explicitState?: boolean) => {
     if (!socketRef.current || !currentSong) return;
+
+    // Check permission: host, or guest if allowGuestPlayPause is true
+    const isAllowed = userRole === 'host' || roomPermissions?.allowGuestPlayPause;
+    if (!isAllowed) {
+      showToast('You do not have permission to play/pause.', 'error');
+      return;
+    }
     
-    const newPlayingState = !isPlaying;
+    const newPlayingState = explicitState !== undefined ? explicitState : !isPlaying;
     
-    // If Host, play/pause locally first to handle browser user-gesture requirements
-    if (userRole === 'host' && ytPlayerRef.current && isPlayerReady) {
+    // If host or guest, we can emit playback state change
+    if (ytPlayerRef.current && isPlayerReady) {
       if (newPlayingState) {
         try {
           ytPlayerRef.current.playVideo();
@@ -890,10 +979,15 @@ function App() {
     socketRef.current.emit('playback:state-change', { isPlaying: newPlayingState });
   };
 
-  // Host Playback Control: Skip
+  // Playback Control: Skip (restricted by permissions)
   const handleSkip = () => {
-    if (userRole !== 'host' || !socketRef.current) return;
-    socketRef.current.emit('song:skip');
+    if (!socketRef.current) return;
+    const isAllowed = userRole === 'host' || roomPermissions?.allowGuestSkip;
+    if (!isAllowed) {
+      showToast('You do not have permission to skip.', 'error');
+      return;
+    }
+    socketRef.current.emit('song:skip', { songId: currentSongRef.current?.id });
     showToast('Skipped song', 'info');
   };
 
@@ -902,6 +996,49 @@ function App() {
     if (userRole !== 'host' || !socketRef.current) return;
     socketRef.current.emit('song:remove-from-queue', { songId });
     showToast('Song removed from queue', 'info');
+  };
+
+  // Queue reorder emitter (restricted to host)
+  const handleReorderQueue = (newQueue: PlayableSong[]) => {
+    if (userRole !== 'host' || !socketRef.current) return;
+    setHostQueue(newQueue);
+    socketRef.current.emit('queue:reorder', { queueIds: newQueue.map(q => q.id) });
+  };
+
+  const updateSinglePermission = (key: string, value: boolean) => {
+    if (userRole !== 'host' || !socketRef.current) return;
+    const updatedPermissions = {
+      ...roomPermissions,
+      [key]: value
+    };
+    setRoomPermissions(updatedPermissions);
+    socketRef.current.emit('room:update-permissions', { permissions: updatedPermissions });
+  };
+
+  const moveSongUp = (idx: number) => {
+    if (idx <= 0) return;
+    const newQueue = [...hostQueue];
+    const temp = newQueue[idx];
+    newQueue[idx] = newQueue[idx - 1];
+    newQueue[idx - 1] = temp;
+    handleReorderQueue(newQueue);
+  };
+
+  const moveSongDown = (idx: number) => {
+    if (idx >= hostQueue.length - 1) return;
+    const newQueue = [...hostQueue];
+    const temp = newQueue[idx];
+    newQueue[idx] = newQueue[idx + 1];
+    newQueue[idx + 1] = temp;
+    handleReorderQueue(newQueue);
+  };
+
+  const moveSongToTop = (idx: number) => {
+    if (idx <= 0) return;
+    const newQueue = [...hostQueue];
+    const song = newQueue.splice(idx, 1)[0];
+    newQueue.unshift(song);
+    handleReorderQueue(newQueue);
   };
 
   // Inactivity Warning: Continue activity
@@ -946,11 +1083,18 @@ function App() {
   };
 
   const handleProgressChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // If guest and seeks are disabled, prevent dragging
+    const isAllowed = userRole === 'host' || roomPermissions?.allowGuestSeek;
+    if (!isAllowed) return;
+
     isDraggingProgressRef.current = true;
     updatePlaybackProgress(parseFloat(e.target.value));
   };
 
   const handleProgressSeek = () => {
+    const isAllowed = userRole === 'host' || roomPermissions?.allowGuestSeek;
+    if (!isAllowed) return;
+
     isDraggingProgressRef.current = false;
     if (socketRef.current) {
       socketRef.current.emit('playback:seek', { progress: latestProgressRef.current });
@@ -959,10 +1103,117 @@ function App() {
 
   const handleSeekOffset = (offset: number) => {
     if (!currentSong || !socketRef.current) return;
-    const newProgress = Math.max(0, Math.min(currentSong.duration, playbackProgress + offset));
+    const isAllowed = userRole === 'host' || roomPermissions?.allowGuestSeek;
+    if (!isAllowed) {
+      showToast('You do not have permission to seek.', 'error');
+      return;
+    }
+
+    const newProgress = Math.max(0, Math.min(currentSong.duration, latestProgressRef.current + offset));
     updatePlaybackProgress(newProgress);
+    
+    if (ytPlayerRef.current && isPlayerReady) {
+      try {
+        ytPlayerRef.current.seekTo(newProgress, true);
+      } catch (err) {
+        console.warn("YouTube seek offset failed", err);
+      }
+    }
     socketRef.current.emit('playback:seek', { progress: newProgress });
   };
+
+  // Mobile background audio silent looping & mediaSession integrations
+  useEffect(() => {
+    const silentAudio = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA");
+    silentAudio.loop = true;
+    silentAudioRef.current = silentAudio;
+
+    return () => {
+      silentAudio.pause();
+      silentAudioRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const silentAudio = silentAudioRef.current;
+    if (!silentAudio) return;
+
+    if (isPlaying && currentSong) {
+      silentAudio.play().catch(err => {
+        console.warn("Silent background audio play blocked/failed", err);
+      });
+    } else {
+      silentAudio.pause();
+    }
+  }, [isPlaying, currentSong]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+
+    if (currentSong) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentSong.title,
+        artist: currentSong.artist,
+        album: currentSong.album || 'LocalParty',
+        artwork: [
+          { src: currentSong.albumArt || '/logo.png', sizes: '96x96', type: 'image/jpeg' },
+          { src: currentSong.albumArt || '/logo.png', sizes: '128x128', type: 'image/jpeg' },
+          { src: currentSong.albumArt || '/logo.png', sizes: '192x192', type: 'image/jpeg' },
+          { src: currentSong.albumArt || '/logo.png', sizes: '256x256', type: 'image/jpeg' },
+          { src: currentSong.albumArt || '/logo.png', sizes: '384x384', type: 'image/jpeg' },
+          { src: currentSong.albumArt || '/logo.png', sizes: '512x512', type: 'image/jpeg' },
+        ]
+      });
+
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    } else {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+    }
+  }, [currentSong, isPlaying]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+
+    try {
+      navigator.mediaSession.setActionHandler('play', () => {
+        handlePlayPause(true);
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        handlePlayPause(false);
+      });
+      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+        const offset = details.seekOffset || -10;
+        handleSeekOffset(offset);
+      });
+      navigator.mediaSession.setActionHandler('seekforward', (details) => {
+        const offset = details.seekOffset || 10;
+        handleSeekOffset(offset);
+      });
+      navigator.mediaSession.setActionHandler('previoustrack', () => {
+        handleSeekOffset(-10);
+      });
+      navigator.mediaSession.setActionHandler('nexttrack', () => {
+        handleSkip();
+      });
+    } catch (err) {
+      console.warn("Failed to set Media Session action handlers", err);
+    }
+
+    return () => {
+      if (!('mediaSession' in navigator)) return;
+      try {
+        navigator.mediaSession.setActionHandler('play', null);
+        navigator.mediaSession.setActionHandler('pause', null);
+        navigator.mediaSession.setActionHandler('seekbackward', null);
+        navigator.mediaSession.setActionHandler('seekforward', null);
+        navigator.mediaSession.setActionHandler('previoustrack', null);
+        navigator.mediaSession.setActionHandler('nexttrack', null);
+      } catch (err) {
+        console.warn("Failed to clear Media Session action handlers", err);
+      }
+    };
+  }, [currentSong, isPlaying, roomPermissions, userRole]);
 
   // Discovery Action: Fetch Nearby Rooms
   const fetchNearbyRooms = async (silent = false, forceLocal = false) => {
@@ -1051,6 +1302,41 @@ function App() {
     const seconds = Math.floor(secs % 60);
     return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
   };
+
+  if (isArchived) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-spotify-black p-6">
+        <div className="absolute inset-0 opacity-[0.03] bg-[radial-gradient(#fff_1px,transparent_1px)] bg-[size:10px_10px] pointer-events-none"></div>
+        
+        {/* Ambient glowing orb */}
+        <div className="absolute w-96 h-96 rounded-full blur-[120px] bg-red-500/10 pointer-events-none"></div>
+        
+        <div className="w-full max-w-sm glass-panel p-8 rounded-3xl text-center border border-red-500/20 shadow-2xl flex flex-col items-center">
+          <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/25 flex items-center justify-center mb-6">
+            <ShieldAlert className="w-8 h-8 text-red-500 animate-pulse" />
+          </div>
+          
+          <h2 className="text-2xl font-black mb-3 tracking-wide text-white uppercase bg-gradient-to-r from-white via-white to-red-400 bg-clip-text text-transparent">
+            Session Archived
+          </h2>
+          
+          <p className="text-xs text-spotify-text leading-relaxed mb-8 px-2">
+            This room has been destroyed automatically after 1 hour of inactivity to keep the party performance optimal.
+          </p>
+          
+          <button
+            onClick={() => {
+              setIsArchived(false);
+              setCurrentView('landing');
+            }}
+            className="w-full py-4 rounded-full bg-spotify-green text-black font-extrabold text-sm hover:scale-102 active:scale-98 transition-all cursor-pointer shadow-lg shadow-spotify-green/20 hover:bg-green-400"
+          >
+            Return to Lobby
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-spotify-black text-white flex flex-col relative">
@@ -1350,6 +1636,99 @@ function App() {
                   </motion.div>
                 )}
 
+                {/* Collapsible Guest Control Permissions Settings */}
+                <div className="border-t border-white/5 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowPermissionsConfig(!showPermissionsConfig)}
+                    className="w-full flex items-center justify-between py-2 text-xs font-bold uppercase tracking-wider text-spotify-text hover:text-white transition cursor-pointer select-none"
+                  >
+                    <span>🛡️ Guest Control Permissions</span>
+                    <span className="text-spotify-green font-mono">{showPermissionsConfig ? '▲' : '▼'}</span>
+                  </button>
+
+                  <AnimatePresence>
+                    {showPermissionsConfig && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden mt-3 space-y-3.5 pl-1 text-left"
+                      >
+                        {/* 1. Skip songs */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-spotify-text">Guests can skip songs</span>
+                          <label className="relative inline-flex items-center cursor-pointer select-none">
+                            <input 
+                              type="checkbox" 
+                              checked={allowGuestSkip} 
+                              onChange={(e) => setAllowGuestSkip(e.target.checked)}
+                              className="sr-only peer" 
+                            />
+                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                          </label>
+                        </div>
+
+                        {/* 2. Seek progress */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-spotify-text">Guests can seek & rewind 10s</span>
+                          <label className="relative inline-flex items-center cursor-pointer select-none">
+                            <input 
+                              type="checkbox" 
+                              checked={allowGuestSeek} 
+                              onChange={(e) => setAllowGuestSeek(e.target.checked)}
+                              className="sr-only peer" 
+                            />
+                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                          </label>
+                        </div>
+
+                        {/* 3. Play/Pause */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-spotify-text">Guests can play & pause song</span>
+                          <label className="relative inline-flex items-center cursor-pointer select-none">
+                            <input 
+                              type="checkbox" 
+                              checked={allowGuestPlayPause} 
+                              onChange={(e) => setAllowGuestPlayPause(e.target.checked)}
+                              className="sr-only peer" 
+                            />
+                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                          </label>
+                        </div>
+
+                        {/* 4. Mute/Unmute */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-spotify-text">Guests start muted (prevent echoes)</span>
+                          <label className="relative inline-flex items-center cursor-pointer select-none">
+                            <input 
+                              type="checkbox" 
+                              checked={guestMuteByDefault} 
+                              onChange={(e) => setGuestMuteByDefault(e.target.checked)}
+                              className="sr-only peer" 
+                            />
+                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                          </label>
+                        </div>
+
+                        {/* 5. Display Video */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-spotify-text">Display video player on guest devices</span>
+                          <label className="relative inline-flex items-center cursor-pointer select-none">
+                            <input 
+                              type="checkbox" 
+                              checked={displayGuestVideo} 
+                              onChange={(e) => setDisplayGuestVideo(e.target.checked)}
+                              className="sr-only peer" 
+                            />
+                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                          </label>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
                 <div className="pt-2">
                   <button
                     type="submit"
@@ -1464,7 +1843,7 @@ function App() {
                   <div className="pt-2">
                     <button
                       type="submit"
-                      className="w-full py-3.5 rounded-xl bg-spotify-green text-black font-extrabold hover:scale-102 hover:bg-spotify-green/95 active:scale-98 transition cursor-pointer text-sm"
+                      className="w-full py-3.5 rounded-xl bg-spotify-green text-black font-extrabold hover:scale-102 hover:bg-spotify-green/95 active:scale-98 transition cursor-pointer text-sm whitespace-nowrap flex-shrink-0"
                     >
                       Connect & Suggest Tracks
                     </button>
@@ -1789,14 +2168,64 @@ function App() {
                   {/* Widescreen Video Viewport for Everyone */}
                   <div className="relative mb-8 w-full aspect-video flex items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/60 shadow-2xl">
                     {/* YouTube player element must be present in the DOM always to avoid iframe recreation issues */}
-                    <div className={`w-full h-full transition-opacity duration-300 ${currentSong ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+                    <div 
+                      className={`transition-all duration-300 ${
+                        (userRole === 'host' || roomPermissions?.displayGuestVideo) && currentSong 
+                          ? 'w-full h-full opacity-100' 
+                          : 'absolute w-[1px] h-[1px] opacity-0 pointer-events-none'
+                      }`}
+                    >
                       <YouTubePlaceholder />
                     </div>
                     
-                    {!currentSong && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center text-spotify-text">
-                        <Music className="w-12 h-12 mb-2 stroke-[1.5] text-spotify-text/30 animate-pulse" />
-                        <p className="text-xs">No active video stream</p>
+                    {/* Visualizer and Vinyl Cover Art if guest video is off or no song */}
+                    {(!(userRole === 'host' || roomPermissions?.displayGuestVideo) || !currentSong) && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center p-6 bg-gradient-to-br from-spotify-dark via-spotify-gray to-spotify-black text-center w-full h-full">
+                        {currentSong ? (
+                          <>
+                            {/* Spinning Vinyl Record / Cover Art */}
+                            <div className="relative w-28 h-28 mb-3 flex items-center justify-center">
+                              <div 
+                                className={`w-full h-full rounded-full border-4 border-spotify-light-gray shadow-2xl overflow-hidden ${
+                                  isPlaying ? 'animate-spin-slow' : ''
+                                }`}
+                                style={{ 
+                                  backgroundImage: `url(${currentSong.albumArt})`, 
+                                  backgroundSize: 'cover',
+                                  backgroundPosition: 'center'
+                                }}
+                              >
+                                {/* Center spindle hole */}
+                                <div className="absolute inset-0 m-auto w-6 h-6 rounded-full bg-spotify-black border border-white/20 shadow-inner flex items-center justify-center">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-spotify-green"></div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Audio Visualizer Waves */}
+                            <div className="flex items-end justify-center gap-1 h-6 mt-1">
+                              {Array.from({ length: 15 }).map((_, i) => {
+                                const animDuration = [0.8, 1.2, 0.6, 1.5, 0.9, 1.1, 0.7, 1.3, 1.0, 1.4, 0.8, 1.2, 0.5, 1.1, 0.9][i];
+                                return (
+                                  <div
+                                    key={i}
+                                    className="w-1 bg-spotify-green rounded-full transition-all duration-300"
+                                    style={{
+                                      height: isPlaying ? '100%' : '15%',
+                                      animation: isPlaying ? `visualizer-bounce ${animDuration}s ease-in-out infinite alternate` : 'none',
+                                      animationDelay: `${i * 0.05}s`
+                                    }}
+                                  />
+                                );
+                              })}
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center text-spotify-text">
+                            <Music className="w-12 h-12 mb-2 stroke-[1.5] text-spotify-text/30 animate-pulse" />
+                            <p className="text-xs">No active video stream</p>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1831,11 +2260,14 @@ function App() {
                       onChange={handleProgressChange}
                       onMouseUp={handleProgressSeek}
                       onTouchEnd={handleProgressSeek}
-                      disabled={!currentSong}
-                      className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-spotify-green focus:outline-hidden"
+                      disabled={!currentSong || (userRole !== 'host' && !roomPermissions?.allowGuestSeek)}
+                      className={`w-full h-1 bg-white/10 rounded-full appearance-none accent-spotify-green focus:outline-hidden ${
+                        (userRole === 'host' || roomPermissions?.allowGuestSeek) ? 'cursor-pointer' : 'cursor-not-allowed opacity-80'
+                      }`}
                       style={{
                         background: `linear-gradient(to right, #1db954 0%, #1db954 ${currentSong ? (playbackProgress / currentSong.duration) * 100 : 0}%, rgba(255,255,255,0.1) ${currentSong ? (playbackProgress / currentSong.duration) * 100 : 0}%, rgba(255,255,255,0.1) 100%)`
                       }}
+                      title={!(userRole === 'host' || roomPermissions?.allowGuestSeek) ? 'Only permitted users can seek global playback' : 'Seek playback position'}
                     />
                     <div className="flex justify-between text-xxs font-bold text-spotify-text tracking-wide font-mono">
                       <span>{formatTime(playbackProgress)}</span>
@@ -1861,27 +2293,27 @@ function App() {
                     {/* Seek Backward 10s */}
                     <button
                       onClick={() => handleSeekOffset(-10)}
-                      disabled={!currentSong}
-                      className={`px-3 py-2 rounded-full transition border font-mono text-xs font-bold cursor-pointer ${
-                        currentSong 
-                          ? 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10' 
+                      disabled={!currentSong || (userRole !== 'host' && !roomPermissions?.allowGuestSeek)}
+                      className={`px-3 py-2 rounded-full transition border font-mono text-xs font-bold ${
+                        (currentSong && (userRole === 'host' || roomPermissions?.allowGuestSeek))
+                          ? 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10 cursor-pointer' 
                           : 'border-white/5 text-white/10 cursor-not-allowed'
                       }`}
-                      title="Seek backward 10 seconds"
+                      title={!(userRole === 'host' || roomPermissions?.allowGuestSeek) ? 'Only permitted users can seek global playback' : 'Seek backward 10 seconds'}
                     >
                       -10s
                     </button>
 
                     {/* Play/Pause Button */}
                     <button
-                      onClick={handlePlayPause}
-                      disabled={!currentSong}
-                      className={`w-14 h-14 rounded-full flex items-center justify-center transition shadow-lg cursor-pointer ${
-                        currentSong 
-                          ? 'bg-white text-black hover:scale-105 hover:bg-spotify-green hover:shadow-[0_0_20px_#1db954]' 
-                          : 'bg-white/10 text-white/30 cursor-not-allowed'
+                      onClick={() => handlePlayPause()}
+                      disabled={!currentSong || (userRole !== 'host' && !roomPermissions?.allowGuestPlayPause)}
+                      className={`w-14 h-14 rounded-full flex items-center justify-center transition shadow-lg ${
+                        (currentSong && (userRole === 'host' || roomPermissions?.allowGuestPlayPause))
+                          ? 'bg-white text-black hover:scale-105 hover:bg-spotify-green hover:shadow-[0_0_20px_#1db954] cursor-pointer' 
+                          : 'bg-white/10 text-white/20 cursor-not-allowed'
                       }`}
-                      title={currentSong ? (isPlaying ? 'Pause song' : 'Play song') : 'No song playing'}
+                      title={!(userRole === 'host' || roomPermissions?.allowGuestPlayPause) ? 'Only permitted users can pause/play global playback' : (currentSong ? (isPlaying ? 'Pause song' : 'Play song') : 'No song playing')}
                     >
                       {isPlaying ? <Pause className="w-6 h-6 fill-current stroke-[3]" /> : <Play className="w-6 h-6 fill-current stroke-[3] translate-x-0.5" />}
                     </button>
@@ -1889,18 +2321,19 @@ function App() {
                     {/* Seek Forward 10s */}
                     <button
                       onClick={() => handleSeekOffset(10)}
-                      disabled={!currentSong}
-                      className={`px-3 py-2 rounded-full transition border font-mono text-xs font-bold cursor-pointer ${
-                        currentSong 
-                          ? 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10' 
+                      disabled={!currentSong || (userRole !== 'host' && !roomPermissions?.allowGuestSeek)}
+                      className={`px-3 py-2 rounded-full transition border font-mono text-xs font-bold ${
+                        (currentSong && (userRole === 'host' || roomPermissions?.allowGuestSeek))
+                          ? 'bg-white/5 border-white/5 text-spotify-text hover:text-white hover:bg-white/10 cursor-pointer' 
                           : 'border-white/5 text-white/10 cursor-not-allowed'
                       }`}
-                      title="Seek forward 10 seconds"
+                      title={!(userRole === 'host' || roomPermissions?.allowGuestSeek) ? 'Only permitted users can seek global playback' : 'Seek forward 10 seconds'}
                     >
                       +10s
                     </button>
 
-                    {userRole === 'host' ? (
+                    {/* Skip button (Visible for host, or guest if allowGuestSkip is true) */}
+                    {(userRole === 'host' || roomPermissions?.allowGuestSkip) && (
                       <button
                         onClick={handleSkip}
                         disabled={!currentSong && hostQueue.length === 0}
@@ -1913,10 +2346,13 @@ function App() {
                       >
                         <SkipForward className="w-5 h-5 fill-current" />
                       </button>
-                    ) : (
+                    )}
+
+                    {/* Suggest button (Visible for guests) */}
+                    {userRole === 'guest' && (
                       <button
                         onClick={() => setIsSearchOpen(true)}
-                        className="px-5 py-2.5 rounded-full bg-spotify-green text-black font-extrabold flex items-center justify-center gap-1.5 hover:scale-105 active:scale-95 transition shadow-lg cursor-pointer text-xs"
+                        className="px-5 py-2.5 rounded-full bg-spotify-green text-black font-extrabold flex items-center justify-center gap-1.5 hover:scale-105 active:scale-95 transition shadow-lg cursor-pointer text-xs whitespace-nowrap flex-shrink-0"
                       >
                         <Plus className="w-4 h-4 stroke-[3]" /> Suggest
                       </button>
@@ -1927,6 +2363,90 @@ function App() {
 
               {/* Right Column: Active users & Host Queue Drawer OR Guest Recently Played */}
               <div className="lg:col-span-5 flex flex-col gap-6 w-full">
+                
+                {/* Host Dynamic Settings and Permissions Panel */}
+                {userRole === 'host' && (
+                  <div className="glass-panel p-6 rounded-2xl border border-white/5 w-full text-left">
+                    <button
+                      type="button"
+                      onClick={() => setShowPermissionsConfig(!showPermissionsConfig)}
+                      className="w-full flex items-center justify-between text-xs font-bold uppercase tracking-wider text-spotify-text hover:text-white transition cursor-pointer select-none whitespace-nowrap flex-shrink-0"
+                    >
+                      <span className="flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-spotify-green animate-pulse" />
+                        Room Settings & Permissions
+                      </span>
+                      <span className="text-spotify-green font-mono">{showPermissionsConfig ? '▲' : '▼'}</span>
+                    </button>
+
+                    <AnimatePresence>
+                      {showPermissionsConfig && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="overflow-hidden mt-4 space-y-4 border-t border-white/5 pt-4 pl-1"
+                        >
+                          {/* 1. Skip songs */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-spotify-text">Allow guests to skip songs</span>
+                            <label className="relative inline-flex items-center cursor-pointer select-none">
+                              <input 
+                                type="checkbox" 
+                                checked={roomPermissions?.allowGuestSkip ?? true} 
+                                onChange={(e) => updateSinglePermission('allowGuestSkip', e.target.checked)}
+                                className="sr-only peer" 
+                              />
+                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            </label>
+                          </div>
+
+                          {/* 2. Seek progress */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-spotify-text">Allow guests to seek & rewind 10s</span>
+                            <label className="relative inline-flex items-center cursor-pointer select-none">
+                              <input 
+                                type="checkbox" 
+                                checked={roomPermissions?.allowGuestSeek ?? false} 
+                                onChange={(e) => updateSinglePermission('allowGuestSeek', e.target.checked)}
+                                className="sr-only peer" 
+                              />
+                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            </label>
+                          </div>
+
+                          {/* 3. Play/Pause */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-spotify-text">Allow guests to play & pause song</span>
+                            <label className="relative inline-flex items-center cursor-pointer select-none">
+                              <input 
+                                type="checkbox" 
+                                checked={roomPermissions?.allowGuestPlayPause ?? true} 
+                                onChange={(e) => updateSinglePermission('allowGuestPlayPause', e.target.checked)}
+                                className="sr-only peer" 
+                              />
+                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            </label>
+                          </div>
+
+                          {/* 4. Display Video */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-spotify-text">Display video player on guest devices</span>
+                            <label className="relative inline-flex items-center cursor-pointer select-none">
+                              <input 
+                                type="checkbox" 
+                                checked={roomPermissions?.displayGuestVideo ?? false} 
+                                onChange={(e) => updateSinglePermission('displayGuestVideo', e.target.checked)}
+                                className="sr-only peer" 
+                              />
+                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            </label>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
                 
                 {/* Online Users List Widget */}
                 <div className="glass-panel p-6 rounded-2xl border border-white/5 w-full">
@@ -1984,39 +2504,118 @@ function App() {
                       </h3>
                       <button
                         onClick={() => setIsSearchOpen(true)}
-                        className="px-2.5 py-1 rounded-full bg-white/5 border border-white/5 text-xxs font-bold text-white hover:bg-white/10 hover:border-white/10 transition flex items-center gap-1 cursor-pointer"
+                        className="px-2.5 py-1 rounded-full bg-white/5 border border-white/5 text-xxs font-bold text-white hover:bg-white/10 hover:border-white/10 transition flex items-center gap-1 cursor-pointer whitespace-nowrap flex-shrink-0"
                       >
                         <Plus className="w-3.5 h-3.5" /> Add Track
                       </button>
                     </div>
-
-                    <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 space-y-3">
+                    <div className="flex-grow overflow-y-auto custom-scrollbar pr-1 space-y-3">
                       {hostQueue.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full py-8 text-center text-spotify-text">
-                          <Layers className="w-10 h-10 mb-3 stroke-[1.5] text-spotify-text/30" />
-                          <p className="text-xs font-semibold">Queue is empty</p>
-                          <p className="text-xxs mt-1">Guests can add songs anytime!</p>
-                        </div>
+                        autoplayQueue.length > 0 ? (
+                          <div className="space-y-3 text-left">
+                            <div className="flex flex-col items-center justify-center py-4 text-center text-spotify-text border-b border-white/5 pb-4 mb-2">
+                              <Layers className="w-8 h-8 mb-2 stroke-[1.5] text-spotify-text/30" />
+                              <p className="text-xs font-semibold text-white/80">Active Queue is empty</p>
+                              <p className="text-[10px] text-spotify-text mt-0.5 px-2">Guests have not suggested any tracks yet. Playing from prospective list:</p>
+                            </div>
+                            
+                            <h4 className="text-[10px] font-extrabold uppercase tracking-wider text-spotify-green/80 mb-2 pl-2">Up Next (Autoplay)</h4>
+                            {autoplayQueue.map((song, idx) => (
+                              <div 
+                                key={song.id || idx}
+                                className="flex items-center gap-3 p-2 hover:bg-white/5 rounded-xl transition opacity-80 hover:opacity-100"
+                              >
+                                <img 
+                                  src={song.albumArt} 
+                                  alt={song.album} 
+                                  className="w-10 h-10 rounded-md object-cover border border-white/5 filter grayscale-[30%]"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <h4 className="text-xs font-bold text-white/80 truncate">{song.title}</h4>
+                                  <p className="text-xxs text-spotify-text truncate mt-0.5">
+                                    {song.artist} • <span className="text-spotify-green">Autoplay Candidate</span>
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center h-full py-8 text-center text-spotify-text">
+                            <Layers className="w-10 h-10 mb-3 stroke-[1.5] text-spotify-text/30" />
+                            <p className="text-xs font-semibold">Queue is empty</p>
+                            <p className="text-xxs mt-1">Guests can add songs anytime!</p>
+                          </div>
+                        )
                       ) : (
-                        hostQueue.map((song) => (
+                        hostQueue.map((song, index) => (
                           <div 
                             key={song.id}
-                            className="flex items-center gap-3 p-2 hover:bg-white/5 rounded-xl transition group"
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData("text/plain", index.toString());
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const sourceIdx = parseInt(e.dataTransfer.getData("text/plain"), 10);
+                              const targetIdx = index;
+                              if (sourceIdx === targetIdx) return;
+                              
+                              const newQueue = [...hostQueue];
+                              const popped = newQueue.splice(sourceIdx, 1)[0];
+                              newQueue.splice(targetIdx, 0, popped);
+                              handleReorderQueue(newQueue);
+                            }}
+                            className="flex items-center gap-3 p-2 hover:bg-white/5 rounded-xl transition group cursor-grab active:cursor-grabbing border border-transparent hover:border-white/5 select-none"
                           >
                             <img 
                               src={song.albumArt} 
                               alt={song.album} 
                               className="w-10 h-10 rounded-md object-cover border border-white/5"
                             />
-                            <div className="flex-1 min-w-0">
+                            <div className="flex-1 min-w-0 text-left">
                               <h4 className="text-xs font-bold text-white truncate">{song.title}</h4>
                               <p className="text-xxs text-spotify-text truncate mt-0.5">
                                 {song.artist} • By {song.addedBy}
                               </p>
                             </div>
+                            
+                            {/* Priority / Move Control Buttons */}
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity focus-within:opacity-100 flex-shrink-0">
+                              {index > 0 && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); moveSongToTop(index); }}
+                                  className="p-1 hover:bg-white/10 rounded text-spotify-green hover:text-green-400 transition cursor-pointer"
+                                  title="Move to top of playlist"
+                                >
+                                  <Upload className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {index > 0 && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); moveSongUp(index); }}
+                                  className="p-1 hover:bg-white/10 rounded text-spotify-text hover:text-white transition cursor-pointer"
+                                  title="Move up"
+                                >
+                                  <ArrowUp className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {index < hostQueue.length - 1 && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); moveSongDown(index); }}
+                                  className="p-1 hover:bg-white/10 rounded text-spotify-text hover:text-white transition cursor-pointer"
+                                  title="Move down"
+                                >
+                                  <ArrowDown className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+
                             <button
                               onClick={() => handleRemoveFromQueue(song.id)}
-                              className="p-1.5 rounded-full hover:bg-red-500/10 text-spotify-text hover:text-red-400 transition opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer"
+                              className="p-1.5 rounded-full hover:bg-red-500/10 text-spotify-text hover:text-red-400 transition opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer flex-shrink-0"
                               title="Remove from queue"
                             >
                               <Trash2 className="w-4 h-4" />
