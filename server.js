@@ -1,26 +1,31 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import cors from 'cors';
-import os from 'os';
-import yts from 'yt-search';
+import express from "express";
+import { createServer } from "http";
+import { Server } from "socket.io";
+import cors from "cors";
+import os from "os";
+import yts from "yt-search";
 
 // Global exception and rejection handlers to prevent server crashes
-process.on('uncaughtException', (err) => {
-  console.error('CRITICAL: Uncaught Exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("CRITICAL: Uncaught Exception:", err);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('CRITICAL: Unhandled Promise Rejection at:', promise, 'reason:', reason);
+process.on("unhandledRejection", (reason, promise) => {
+  console.error(
+    "CRITICAL: Unhandled Promise Rejection at:",
+    promise,
+    "reason:",
+    reason,
+  );
 });
 
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
 });
 
 app.use(cors());
@@ -32,32 +37,37 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 const MAX_REQUESTS_PER_MINUTE = 30; // Max 30 requests per minute per IP
 
 function rateLimiter(req, res, next) {
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+  const ip =
+    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
   const now = Date.now();
 
   if (!ipRequestCounts.has(ip)) {
     ipRequestCounts.set(ip, []);
   }
 
-  const timestamps = ipRequestCounts.get(ip).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  const timestamps = ipRequestCounts
+    .get(ip)
+    .filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
   timestamps.push(now);
   ipRequestCounts.set(ip, timestamps);
 
   if (timestamps.length > MAX_REQUESTS_PER_MINUTE) {
     console.warn(`Rate limit exceeded for IP: ${ip}`);
-    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    return res
+      .status(429)
+      .json({ error: "Too many requests. Please try again later." });
   }
 
   next();
 }
 
 // Root Redirect for Browser Requests, API Status for Health Checks
-app.get('/', (req, res) => {
-  const acceptHeader = req.headers.accept || '';
-  if (acceptHeader.includes('text/html')) {
-    res.redirect('https://local-party.vercel.app/');
+app.get("/", (req, res) => {
+  const acceptHeader = req.headers.accept || "";
+  if (acceptHeader.includes("text/html")) {
+    res.redirect("https://local-party.vercel.app/");
   } else {
-    res.json({ status: 'ok', service: 'local-party-backend' });
+    res.json({ status: "ok", service: "local-party-backend" });
   }
 });
 const rooms = new Map();
@@ -126,14 +136,18 @@ function triggerInactivityWarning(roomCode) {
 
   // If the room has an active playing song, it is not inactive. Extend the timer.
   if (room.currentSong && room.currentSong.isPlaying) {
-    console.log(`Room ${roomCode} has active music playback. Extending activity timer.`);
+    console.log(
+      `Room ${roomCode} has active music playback. Extending activity timer.`,
+    );
     resetRoomActivity(roomCode);
     return;
   }
 
-  console.log(`Room ${roomCode} has been inactive for 1 hour. Broadcasting warning.`);
-  io.to(roomCode).emit('room:inactivity-warning', {
-    warningTimeoutMs: WARNING_TIMEOUT_MS
+  console.log(
+    `Room ${roomCode} has been inactive for 1 hour. Broadcasting warning.`,
+  );
+  io.to(roomCode).emit("room:inactivity-warning", {
+    warningTimeoutMs: WARNING_TIMEOUT_MS,
   });
 
   const timer = setTimeout(() => {
@@ -150,7 +164,7 @@ function destroyRoomDueToInactivity(roomCode) {
 
   clearRoomTimers(roomCode);
 
-  io.to(roomCode).emit('room:destroyed-inactivity');
+  io.to(roomCode).emit("room:destroyed-inactivity");
   rooms.delete(roomCode);
 }
 
@@ -172,8 +186,9 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Electronic Odyssey",
     duration: 372,
-    albumArt: "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+    albumArt:
+      "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
   },
   {
     id: "s2",
@@ -181,8 +196,9 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Retro Waves",
     duration: 425,
-    albumArt: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3"
+    albumArt:
+      "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
   },
   {
     id: "s3",
@@ -190,8 +206,9 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Chill Lounge",
     duration: 344,
-    albumArt: "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
+    albumArt:
+      "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
   },
   {
     id: "s4",
@@ -199,8 +216,9 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Futuristic Horizon",
     duration: 302,
-    albumArt: "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3"
+    albumArt:
+      "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
   },
   {
     id: "s5",
@@ -208,8 +226,9 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Vapor Trails",
     duration: 363,
-    albumArt: "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3"
+    albumArt:
+      "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
   },
   {
     id: "s6",
@@ -217,8 +236,9 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Beach Vibin",
     duration: 312,
-    albumArt: "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3"
+    albumArt:
+      "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3",
   },
   {
     id: "s7",
@@ -226,8 +246,9 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Sub Woofer",
     duration: 382,
-    albumArt: "https://images.unsplash.com/photo-1516280440614-37939bbacd6a?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3"
+    albumArt:
+      "https://images.unsplash.com/photo-1516280440614-37939bbacd6a?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3",
   },
   {
     id: "s8",
@@ -235,33 +256,42 @@ const FALLBACK_SONGS = [
     artist: "SoundHelix Band",
     album: "Galaxy Travel",
     duration: 334,
-    albumArt: "https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3"
-  }
+    albumArt:
+      "https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=300&q=80",
+    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
+  },
 ];
 
 function playFallbackSong(room, roomCode, previousSong) {
-  const availableFallbacks = FALLBACK_SONGS.filter(s => !previousSong || (s.url !== previousSong.url && s.id !== previousSong.id));
-  const fallback = availableFallbacks.length > 0 
-    ? availableFallbacks[Math.floor(Math.random() * availableFallbacks.length)]
-    : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+  const availableFallbacks = FALLBACK_SONGS.filter(
+    (s) =>
+      !previousSong || (s.url !== previousSong.url && s.id !== previousSong.id),
+  );
+  const fallback =
+    availableFallbacks.length > 0
+      ? availableFallbacks[
+          Math.floor(Math.random() * availableFallbacks.length)
+        ]
+      : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
 
   const autoplaySong = {
     ...fallback,
     id: Math.random().toString(36).substring(2, 9),
-    addedBy: 'Autoplay Fallback',
-    addedAt: Date.now()
+    addedBy: "Autoplay Fallback",
+    addedAt: Date.now(),
   };
 
   room.currentSong = {
     ...autoplaySong,
     isPlaying: true,
     progress: 0,
-    startTime: Date.now()
+    startTime: Date.now(),
   };
 
-  console.log(`[Autoplay Fallback] Playing song: "${autoplaySong.title}" in room ${roomCode}`);
-  io.to(roomCode).emit('song:change', room.currentSong);
+  console.log(
+    `[Autoplay Fallback] Playing song: "${autoplaySong.title}" in room ${roomCode}`,
+  );
+  io.to(roomCode).emit("song:change", room.currentSong);
   logRoomEvent(room, `Autoplay fallback started song: "${autoplaySong.title}"`);
 }
 
@@ -272,13 +302,15 @@ async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
   // If the autoplay queue already has 5 or more songs, we don't need to do anything
   if (room.autoplayQueue.length >= 5) {
     // Send updated autoplay queue to host
-    io.to(room.hostSocketId).emit('autoplayQueue:update', room.autoplayQueue);
+    io.to(room.hostSocketId).emit("autoplayQueue:update", room.autoplayQueue);
     return;
   }
 
   try {
-    const query = `${currentSongOrLastPlayed.title} ${currentSongOrLastPlayed.artist || ''} related music`;
-    console.log(`[Autoplay Queue] Replenishing. Searching related songs for: "${query}"`);
+    const query = `${currentSongOrLastPlayed.title} ${currentSongOrLastPlayed.artist || ""} related music`;
+    console.log(
+      `[Autoplay Queue] Replenishing. Searching related songs for: "${query}"`,
+    );
 
     const r = await yts(query);
     const videos = r.videos || [];
@@ -286,20 +318,24 @@ async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
     if (!room.playedHistory) room.playedHistory = [];
 
     // Filter out videos already in queue, autoplay queue, playedHistory, or active song
-    let candidates = videos.filter(v => {
-      const isSelf = v.videoId === currentSongOrLastPlayed.url || v.videoId === currentSongOrLastPlayed.id;
+    let candidates = videos.filter((v) => {
+      const isSelf =
+        v.videoId === currentSongOrLastPlayed.url ||
+        v.videoId === currentSongOrLastPlayed.id;
       const inHistory = room.playedHistory.includes(v.videoId);
-      const inQueue = room.queue.some(q => q.url === v.videoId);
-      const inAutoplay = room.autoplayQueue.some(q => q.url === v.videoId);
+      const inQueue = room.queue.some((q) => q.url === v.videoId);
+      const inAutoplay = room.autoplayQueue.some((q) => q.url === v.videoId);
       return !isSelf && !inHistory && !inQueue && !inAutoplay;
     });
 
     if (candidates.length === 0 && room.playedHistory.length > 0) {
       room.playedHistory = [];
-      candidates = videos.filter(v => {
-        const isSelf = v.videoId === currentSongOrLastPlayed.url || v.videoId === currentSongOrLastPlayed.id;
-        const inQueue = room.queue.some(q => q.url === v.videoId);
-        const inAutoplay = room.autoplayQueue.some(q => q.url === v.videoId);
+      candidates = videos.filter((v) => {
+        const isSelf =
+          v.videoId === currentSongOrLastPlayed.url ||
+          v.videoId === currentSongOrLastPlayed.id;
+        const inQueue = room.queue.some((q) => q.url === v.videoId);
+        const inAutoplay = room.autoplayQueue.some((q) => q.url === v.videoId);
         return !isSelf && !inQueue && !inAutoplay;
       });
     }
@@ -312,43 +348,51 @@ async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
       const autoplaySong = {
         id: v.videoId,
         title: v.title,
-        artist: (v.author && v.author.name) || 'Autoplay Artist',
-        album: 'Autoplay Related',
+        artist: (v.author && v.author.name) || "Autoplay Artist",
+        album: "Autoplay Related",
         duration: v.seconds || 180,
-        albumArt: v.thumbnail || v.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80',
+        albumArt:
+          v.thumbnail ||
+          v.image ||
+          "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
         url: v.videoId,
-        addedBy: 'Autoplay',
-        addedAt: Date.now()
+        addedBy: "Autoplay",
+        addedAt: Date.now(),
       };
       room.autoplayQueue.push(autoplaySong);
     }
 
     // Fallback to pre-defined mock tracks if still empty or deficient
     while (room.autoplayQueue.length < 5) {
-      const mock = FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+      const mock =
+        FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
       room.autoplayQueue.push({
         ...mock,
         id: Math.random().toString(36).substring(2, 9),
-        addedBy: 'Autoplay Fallback',
-        addedAt: Date.now()
+        addedBy: "Autoplay Fallback",
+        addedAt: Date.now(),
       });
     }
 
     // Broadcast updated autoplay queue to host
-    io.to(room.hostSocketId).emit('autoplayQueue:update', room.autoplayQueue);
+    io.to(room.hostSocketId).emit("autoplayQueue:update", room.autoplayQueue);
   } catch (err) {
-    console.error(`[Autoplay Queue] Error replenishing queue for room ${roomCode}:`, err);
+    console.error(
+      `[Autoplay Queue] Error replenishing queue for room ${roomCode}:`,
+      err,
+    );
     // Fill with fallback tracks
     while (room.autoplayQueue.length < 5) {
-      const mock = FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+      const mock =
+        FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
       room.autoplayQueue.push({
         ...mock,
         id: Math.random().toString(36).substring(2, 9),
-        addedBy: 'Autoplay Fallback',
-        addedAt: Date.now()
+        addedBy: "Autoplay Fallback",
+        addedAt: Date.now(),
       });
     }
-    io.to(room.hostSocketId).emit('autoplayQueue:update', room.autoplayQueue);
+    io.to(room.hostSocketId).emit("autoplayQueue:update", room.autoplayQueue);
   }
 }
 
@@ -364,12 +408,12 @@ async function playRelatedSong(roomCode, previousSong) {
         ...nextSong,
         isPlaying: true,
         progress: 0,
-        startTime: Date.now()
+        startTime: Date.now(),
       };
-      io.to(roomCode).emit('song:change', room.currentSong);
-      io.to(room.hostSocketId).emit('queue:update', room.queue);
+      io.to(roomCode).emit("song:change", room.currentSong);
+      io.to(room.hostSocketId).emit("queue:update", room.queue);
       logRoomEvent(room, `Skipped to next queued song: "${nextSong.title}"`);
-      
+
       // Fill the autoplayQueue based on this new active song!
       fillAutoplayQueue(room, roomCode, room.currentSong);
       return;
@@ -399,26 +443,35 @@ async function playRelatedSong(roomCode, previousSong) {
         ...autoplaySong,
         isPlaying: true,
         progress: 0,
-        startTime: Date.now()
+        startTime: Date.now(),
       };
 
-      console.log(`[Autoplay] Playing related song: "${autoplaySong.title}" in room ${roomCode}`);
-      io.to(roomCode).emit('song:change', room.currentSong);
-      logRoomEvent(room, `Autoplay started related song: "${autoplaySong.title}"`);
+      console.log(
+        `[Autoplay] Playing related song: "${autoplaySong.title}" in room ${roomCode}`,
+      );
+      io.to(roomCode).emit("song:change", room.currentSong);
+      logRoomEvent(
+        room,
+        `Autoplay started related song: "${autoplaySong.title}"`,
+      );
 
       // Asynchronously replenish the autoplayQueue
       fillAutoplayQueue(room, roomCode, room.currentSong);
     } else {
       // Autoplay fallback to SoundHelix mock catalog
-      console.log(`[Autoplay] No related songs found. Falling back to SoundHelix catalog...`);
+      console.log(
+        `[Autoplay] No related songs found. Falling back to SoundHelix catalog...`,
+      );
       playFallbackSong(room, roomCode, previousSong);
     }
   } catch (err) {
-    console.error(`[Autoplay] Error finding related song for room ${roomCode}:`, err);
+    console.error(
+      `[Autoplay] Error finding related song for room ${roomCode}:`,
+      err,
+    );
     playFallbackSong(room, roomCode, previousSong);
   }
 }
-
 
 // Helper: Get local IPv4 address
 function getLocalIpAddress() {
@@ -428,75 +481,105 @@ function getLocalIpAddress() {
     if (!iface) continue;
     for (let i = 0; i < iface.length; i++) {
       const alias = iface[i];
-      if (alias.family === 'IPv4' && alias.address !== '127.0.0.1' && !alias.internal) {
+      if (
+        alias.family === "IPv4" &&
+        alias.address !== "127.0.0.1" &&
+        !alias.internal
+      ) {
         return alias.address;
       }
     }
   }
-  return 'localhost';
+  return "localhost";
 }
 
 // Helper: Resolve real client IP from Socket handshake (reverse proxy aware)
 function getClientIp(socket) {
-  const headers = socket.handshake.headers;
-  const forwarded = headers['x-forwarded-for'] || headers['x-real-ip'] || headers['x-client-ip'];
+  const headers =
+    socket.handshake && socket.handshake.headers
+      ? socket.handshake.headers
+      : {};
+  const forwarded =
+    headers["x-forwarded-for"] ||
+    headers["x-real-ip"] ||
+    headers["x-client-ip"];
   if (forwarded) {
-    return forwarded.split(',')[0].trim();
+    return forwarded.split(",")[0].trim();
   }
-  return socket.handshake.address || '127.0.0.1';
+
+  // Prefer connection remoteAddress fields where available (more reliable under some setups)
+  const remote =
+    (socket.request &&
+      socket.request.connection &&
+      socket.request.connection.remoteAddress) ||
+    (socket.conn && socket.conn.remoteAddress) ||
+    socket.handshake.address ||
+    "127.0.0.1";
+
+  // Normalize IPv4-mapped IPv6 addresses like ::ffff:192.168.1.5 to plain IPv4
+  return typeof remote === "string"
+    ? remote.replace(/^::ffff:/, "")
+    : "127.0.0.1";
 }
 
 const LOCAL_IP = getLocalIpAddress();
 
 // Expose discovery API
-app.get('/api/rooms', rateLimiter, (req, res) => {
-  const isLocalOnly = req.query.local === 'true';
-  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+app.get("/api/rooms", rateLimiter, (req, res) => {
+  const isLocalOnly = req.query.local === "true";
+  const clientIp =
+    req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
 
   let roomList = Array.from(rooms.values());
 
   if (isLocalOnly) {
-    roomList = roomList.filter(room => {
+    roomList = roomList.filter((room) => {
       // Find host user's IP
-      const hostUser = room.users.find(u => u.isHost);
+      const hostUser = room.users.find((u) => u.isHost);
       const hostIp = hostUser ? hostUser.ip : null;
 
       if (!hostIp) return false;
 
       // If client is loopback, match loopback IPs
-      const isClientLoopback = clientIp === '::1' || clientIp === '127.0.0.1' || clientIp.includes('::ffff:127.0.0.1');
-      const isHostLoopback = hostIp === '::1' || hostIp === '127.0.0.1' || hostIp.includes('::ffff:127.0.0.1');
+      const isClientLoopback =
+        clientIp === "::1" ||
+        clientIp === "127.0.0.1" ||
+        clientIp.includes("::ffff:127.0.0.1");
+      const isHostLoopback =
+        hostIp === "::1" ||
+        hostIp === "127.0.0.1" ||
+        hostIp.includes("::ffff:127.0.0.1");
       if (isClientLoopback && isHostLoopback) {
         return true;
       }
 
       // Otherwise, match exact external IPs (which are identical for users sharing NAT/Wi-Fi router)
-      const normClientIp = clientIp.replace(/^::ffff:/, '');
-      const normHostIp = hostIp.replace(/^::ffff:/, '');
+      const normClientIp = clientIp.replace(/^::ffff:/, "");
+      const normHostIp = hostIp.replace(/^::ffff:/, "");
       return normClientIp === normHostIp;
     });
   }
 
-  const activeRooms = roomList.map(room => ({
+  const activeRooms = roomList.map((room) => ({
     roomCode: room.roomCode,
     roomName: room.roomName,
     hostName: room.hostName,
     userCount: room.users.length,
     isPrivate: !!room.password,
-    currentSong: room.currentSong ? {
-      title: room.currentSong.title,
-      artist: room.currentSong.artist,
-      albumArt: room.currentSong.albumArt,
-      isPlaying: room.currentSong.isPlaying
-    } : null
+    currentSong: room.currentSong
+      ? {
+          title: room.currentSong.title,
+          artist: room.currentSong.artist,
+          albumArt: room.currentSong.albumArt,
+          isPlaying: room.currentSong.isPlaying,
+        }
+      : null,
   }));
   res.json(activeRooms);
 });
 
-
-
 // Expose local network info API
-app.get('/api/network', (req, res) => {
+app.get("/api/network", (req, res) => {
   res.json({ ip: LOCAL_IP });
 });
 
@@ -509,7 +592,8 @@ function extractVideoId(query) {
   if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
     return trimmed;
   }
-  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/)([^#\&\?]*).*/;
+  const regExp =
+    /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=|shorts\/)([^#\&\?]*).*/;
   const match = trimmed.match(regExp);
   if (match && match[2].length === 11) {
     return match[2];
@@ -518,8 +602,8 @@ function extractVideoId(query) {
 }
 
 // Expose YouTube search API
-app.get('/api/search', rateLimiter, async (req, res) => {
-  const rawQuery = req.query.q || '';
+app.get("/api/search", rateLimiter, async (req, res) => {
+  const rawQuery = req.query.q || "";
   const trimmedQuery = rawQuery.trim();
 
   if (!trimmedQuery) {
@@ -550,11 +634,14 @@ app.get('/api/search', rateLimiter, async (req, res) => {
         const result = {
           id: video.videoId,
           title: video.title,
-          artist: (video.author && video.author.name) || 'Unknown Artist',
-          album: 'YouTube Video',
+          artist: (video.author && video.author.name) || "Unknown Artist",
+          album: "YouTube Video",
           duration: video.seconds || 180,
-          albumArt: video.thumbnail || video.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80',
-          url: video.videoId
+          albumArt:
+            video.thumbnail ||
+            video.image ||
+            "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+          url: video.videoId,
         };
         const results = [result];
         searchCache.set(cacheKey, { timestamp: now, results });
@@ -572,132 +659,187 @@ app.get('/api/search', rateLimiter, async (req, res) => {
     // Improve accuracy by appending "music" to search terms if appropriate
     let searchQuery = trimmedQuery;
     const lowerQuery = trimmedQuery.toLowerCase();
-    if (!lowerQuery.includes('music') && !lowerQuery.includes('song') && !lowerQuery.includes('video') && !lowerQuery.includes('official')) {
+    if (
+      !lowerQuery.includes("music") &&
+      !lowerQuery.includes("song") &&
+      !lowerQuery.includes("video") &&
+      !lowerQuery.includes("official")
+    ) {
       searchQuery = `${trimmedQuery} music`;
     }
 
-    console.log(`Searching YouTube for: "${searchQuery}" (original: "${trimmedQuery}")`);
+    console.log(
+      `Searching YouTube for: "${searchQuery}" (original: "${trimmedQuery}")`,
+    );
     const r = await yts(searchQuery);
     // Limit to 10 results for faster response and clean UI
     const videos = (r.videos || []).slice(0, 10);
-    const results = videos.map(v => ({
+    const results = videos.map((v) => ({
       id: v.videoId,
       title: v.title,
-      artist: (v.author && v.author.name) || 'Unknown Artist',
-      album: 'YouTube Video',
+      artist: (v.author && v.author.name) || "Unknown Artist",
+      album: "YouTube Video",
       duration: v.seconds || 180,
-      albumArt: v.thumbnail || v.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80',
-      url: v.videoId
+      albumArt:
+        v.thumbnail ||
+        v.image ||
+        "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+      url: v.videoId,
     }));
 
     searchCache.set(cacheKey, { timestamp: now, results });
     res.json(results);
   } catch (error) {
-    console.error('YouTube search error:', error);
-    res.status(500).json({ error: 'Search failed' });
+    console.error("YouTube search error:", error);
+    res.status(500).json({ error: "Search failed" });
   }
 });
 
-
 // Expose room audit logs (secured by room password verification)
-app.get('/api/rooms/:roomCode/logs', (req, res) => {
+app.get("/api/rooms/:roomCode/logs", (req, res) => {
   const roomCode = req.params.roomCode?.toUpperCase();
   const password = req.query.password || null;
 
   const room = rooms.get(roomCode);
   if (!room) {
-    return res.status(404).json({ error: 'Room not found' });
+    return res.status(404).json({ error: "Room not found" });
   }
 
   // Validate room password if private
   if (room.password && room.password !== password) {
-    return res.status(403).json({ error: 'Incorrect room password. Audit logs are protected.' });
+    return res
+      .status(403)
+      .json({ error: "Incorrect room password. Audit logs are protected." });
   }
 
   res.json({
     roomCode: room.roomCode,
     roomName: room.roomName,
     hostName: room.hostName,
-    logs: room.auditLog || []
+    logs: room.auditLog || [],
   });
 });
 
+// Queue Balancing Algorithm
+function rebalanceQueue(queue) {
+  if (!queue || queue.length <= 1) return queue;
+
+  const userSongsMap = new Map();
+
+  // 1. Group songs by user (preserves initial appearance order of users as Map keys)
+  for (const song of queue) {
+    if (!userSongsMap.has(song.addedBy)) {
+      userSongsMap.set(song.addedBy, []);
+    }
+    userSongsMap.get(song.addedBy).push(song);
+  }
+
+  // 2. Distribute in round-robin fashion
+  const rebalanced = [];
+  let songsRemaining = true;
+
+  while (songsRemaining) {
+    songsRemaining = false;
+    for (const [user, songs] of userSongsMap.entries()) {
+      if (songs.length > 0) {
+        rebalanced.push(songs.shift());
+        songsRemaining = true;
+      }
+    }
+  }
+
+  return rebalanced;
+}
+
 // Socket.IO logic
-io.on('connection', (socket) => {
+io.on("connection", (socket) => {
   let userRoomCode = null;
   let userName = null;
 
   // Create Room
-  socket.on('room:create', ({ roomName, hostName, password, permissions }, callback) => {
-    // Generate simple 5-digit room code
-    let roomCode;
-    do {
-      roomCode = Math.random().toString(36).substring(2, 7).toUpperCase();
-    } while (rooms.has(roomCode));
+  socket.on(
+    "room:create",
+    ({ roomName, hostName, password, permissions }, callback) => {
+      // Generate simple 5-digit room code
+      let roomCode;
+      do {
+        roomCode = Math.random().toString(36).substring(2, 7).toUpperCase();
+      } while (rooms.has(roomCode));
 
-    const defaultPermissions = {
-      allowGuestSkip: true,
-      allowGuestSeek: false,
-      allowGuestPlayPause: true,
-      guestMuteByDefault: true,
-      displayGuestVideo: false
-    };
+      const defaultPermissions = {
+        allowGuestSkip: true,
+        allowGuestSeek: false,
+        allowGuestPlayPause: true,
+        guestMuteByDefault: true,
+        displayGuestVideo: false,
+      };
 
-    const room = {
-      roomCode,
-      roomName,
-      hostSocketId: socket.id,
-      hostName,
-      users: [{ socketId: socket.id, name: hostName, isHost: true, ip: getClientIp(socket) }],
-      currentSong: null,
-      queue: [],
-      autoplayQueue: [],
-      playedHistory: [],
-      auditLog: [],
-      password: password || null,
-      lastActivityTime: Date.now(),
-      permissions: {
-        ...defaultPermissions,
-        ...(permissions || {})
+      const room = {
+        roomCode,
+        roomName,
+        hostSocketId: socket.id,
+        hostName,
+        users: [
+          {
+            socketId: socket.id,
+            name: hostName,
+            isHost: true,
+            ip: getClientIp(socket),
+          },
+        ],
+        currentSong: null,
+        queue: [],
+        autoplayQueue: [],
+        playedHistory: [],
+        auditLog: [],
+        password: password || null,
+        lastActivityTime: Date.now(),
+        permissions: {
+          ...defaultPermissions,
+          ...(permissions || {}),
+        },
+      };
+
+      rooms.set(roomCode, room);
+      userRoomCode = roomCode;
+      userName = hostName;
+      socket.join(roomCode);
+      resetRoomActivity(roomCode);
+
+      logRoomEvent(room, `Room created by ${hostName} ("${roomName}")`);
+      if (typeof callback === "function") {
+        callback({ success: true, roomCode, room, localIp: LOCAL_IP });
       }
-    };
-
-    rooms.set(roomCode, room);
-    userRoomCode = roomCode;
-    userName = hostName;
-    socket.join(roomCode);
-    resetRoomActivity(roomCode);
-
-    logRoomEvent(room, `Room created by ${hostName} ("${roomName}")`);
-    if (typeof callback === 'function') {
-      callback({ success: true, roomCode, room, localIp: LOCAL_IP });
-    }
-  });
+    },
+  );
 
   // Join Room
-  socket.on('room:join', ({ roomCode, name, password }, callback) => {
+  socket.on("room:join", ({ roomCode, name, password }, callback) => {
     const code = roomCode?.toUpperCase();
     const room = rooms.get(code);
 
     if (!room) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Room not found' });
+      if (typeof callback === "function") {
+        callback({ success: false, message: "Room not found" });
       }
       return;
     }
 
     // Validate password for private rooms
     if (room.password && room.password !== password) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Incorrect room password.' });
+      if (typeof callback === "function") {
+        callback({ success: false, message: "Incorrect room password." });
       }
       return;
     }
 
-    const joinNameRaw = name?.trim() || '';
-    if (!joinNameRaw || joinNameRaw.toLowerCase() === 'guest') {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'A valid name is required to join. "Guest" is not allowed.' });
+    const joinNameRaw = name?.trim() || "";
+    if (!joinNameRaw || joinNameRaw.toLowerCase() === "guest") {
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          message: 'A valid name is required to join. "Guest" is not allowed.',
+        });
       }
       return;
     }
@@ -705,10 +847,19 @@ io.on('connection', (socket) => {
     const joinName = joinNameRaw;
 
     // Check if user already in room
-    const userExists = room.users.some(u => u && u.name && u.name.toLowerCase() === joinName.toLowerCase());
-    const finalName = userExists ? `${joinName} #${room.users.length + 1}` : joinName;
+    const userExists = room.users.some(
+      (u) => u && u.name && u.name.toLowerCase() === joinName.toLowerCase(),
+    );
+    const finalName = userExists
+      ? `${joinName} #${room.users.length + 1}`
+      : joinName;
 
-    const newUser = { socketId: socket.id, name: finalName, isHost: false, ip: getClientIp(socket) };
+    const newUser = {
+      socketId: socket.id,
+      name: finalName,
+      isHost: false,
+      ip: getClientIp(socket),
+    };
     room.users.push(newUser);
     userRoomCode = code;
     userName = finalName;
@@ -717,7 +868,7 @@ io.on('connection', (socket) => {
     logRoomEvent(room, `User ${finalName} joined room`);
 
     // Notify other users
-    io.to(code).emit('room:user-update', room.users);
+    io.to(code).emit("room:user-update", room.users);
     resetRoomActivity(code);
 
     // Send success feedback with sanitised room view (no upcoming queue details for guests)
@@ -727,124 +878,155 @@ io.on('connection', (socket) => {
       hostName: room.hostName,
       users: room.users,
       currentSong: room.currentSong,
-      permissions: room.permissions
+      permissions: room.permissions,
     };
 
-    if (typeof callback === 'function') {
-      callback({ success: true, room: clientRoomState, username: finalName, localIp: LOCAL_IP });
-    }
-  });
-
-  // Reconnect to active session
-  socket.on('room:reconnect', ({ roomCode, role, username, password }, callback) => {
-    const code = roomCode?.toUpperCase();
-    const room = rooms.get(code);
-
-    if (!room) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Session expired or room not found' });
-      }
-      return;
-    }
-
-    // Security: Validate password for private rooms
-    if (room.password && room.password !== password) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Incorrect room password.' });
-      }
-      return;
-    }
-
-    console.log(`Reconnection request: ${username} (${role}) for room: ${code}`);
-
-    // If host is reconnecting, cancel the grace period timer
-    if (role === 'host') {
-      // Security: Verify reconnecting host name matches original host name
-      if (username !== room.hostName) {
-        if (typeof callback === 'function') {
-          callback({ success: false, message: 'Unauthorized host reconnect request.' });
-        }
-        return;
-      }
-
-      const timer = roomDisconnectTimers.get(code);
-      if (timer) {
-        clearTimeout(timer);
-        roomDisconnectTimers.delete(code);
-        logRoomEvent(room, `Host reconnected. Grace period cancelled.`);
-      } else {
-        logRoomEvent(room, `Host reconnected.`);
-      }
-
-      room.hostSocketId = socket.id;
-      
-      // Update or add host in the users list
-      const hostUser = room.users.find(u => u.isHost);
-      if (hostUser) {
-        hostUser.socketId = socket.id;
-      } else {
-        room.users.push({ socketId: socket.id, name: username, isHost: true, ip: getClientIp(socket) });
-      }
-
-      // Notify guests that the host is back online
-      io.to(code).emit('room:host-status', { connected: true });
-    } else {
-      // Guest is reconnecting: Security check
-      const guestUser = room.users.find(u => u.name === username);
-      if (guestUser) {
-        guestUser.socketId = socket.id;
-        logRoomEvent(room, `Guest ${username} reconnected.`);
-      } else {
-        // Guest wasn't in the room before, they cannot bypass normal join
-        if (typeof callback === 'function') {
-          callback({ success: false, message: 'User not found in room session. Please join the room.' });
-        }
-        return;
-      }
-    }
-
-    userRoomCode = code;
-    userName = username || (role === 'host' ? room.hostName : 'Guest');
-    socket.join(code);
-
-    // Broadcast updated users list
-    io.to(code).emit('room:user-update', room.users);
-    resetRoomActivity(code);
-
-    const clientRoomState = {
-      roomCode: room.roomCode,
-      roomName: room.roomName,
-      hostName: room.hostName,
-      users: room.users,
-      currentSong: room.currentSong,
-      permissions: room.permissions
-    };
-
-    if (typeof callback === 'function') {
+    if (typeof callback === "function") {
       callback({
         success: true,
         room: clientRoomState,
-        username: userName,
+        username: finalName,
         localIp: LOCAL_IP,
-        queue: role === 'host' ? room.queue : []
       });
     }
   });
 
+  // Reconnect to active session
+  socket.on(
+    "room:reconnect",
+    ({ roomCode, role, username, password }, callback) => {
+      const code = roomCode?.toUpperCase();
+      const room = rooms.get(code);
+
+      if (!room) {
+        if (typeof callback === "function") {
+          callback({
+            success: false,
+            message: "Session expired or room not found",
+          });
+        }
+        return;
+      }
+
+      // Security: Validate password for private rooms
+      if (room.password && room.password !== password) {
+        if (typeof callback === "function") {
+          callback({ success: false, message: "Incorrect room password." });
+        }
+        return;
+      }
+
+      console.log(
+        `Reconnection request: ${username} (${role}) for room: ${code}`,
+      );
+
+      // If host is reconnecting, cancel the grace period timer
+      if (role === "host") {
+        // Security: Verify reconnecting host name matches original host name
+        if (username !== room.hostName) {
+          if (typeof callback === "function") {
+            callback({
+              success: false,
+              message: "Unauthorized host reconnect request.",
+            });
+          }
+          return;
+        }
+
+        const timer = roomDisconnectTimers.get(code);
+        if (timer) {
+          clearTimeout(timer);
+          roomDisconnectTimers.delete(code);
+          logRoomEvent(room, `Host reconnected. Grace period cancelled.`);
+        } else {
+          logRoomEvent(room, `Host reconnected.`);
+        }
+
+        room.hostSocketId = socket.id;
+
+        // Update or add host in the users list
+        const hostUser = room.users.find((u) => u.isHost);
+        if (hostUser) {
+          hostUser.socketId = socket.id;
+        } else {
+          room.users.push({
+            socketId: socket.id,
+            name: username,
+            isHost: true,
+            ip: getClientIp(socket),
+          });
+        }
+
+        // Notify guests that the host is back online
+        io.to(code).emit("room:host-status", { connected: true });
+      } else {
+        // Guest is reconnecting: Security check
+        const guestUser = room.users.find((u) => u.name === username);
+        if (guestUser) {
+          guestUser.socketId = socket.id;
+          logRoomEvent(room, `Guest ${username} reconnected.`);
+        } else {
+          // Guest wasn't in the room before, they cannot bypass normal join
+          if (typeof callback === "function") {
+            callback({
+              success: false,
+              message: "User not found in room session. Please join the room.",
+            });
+          }
+          return;
+        }
+      }
+
+      userRoomCode = code;
+      userName = username || (role === "host" ? room.hostName : "Guest");
+      socket.join(code);
+
+      // Broadcast updated users list
+      io.to(code).emit("room:user-update", room.users);
+      resetRoomActivity(code);
+
+      const clientRoomState = {
+        roomCode: room.roomCode,
+        roomName: room.roomName,
+        hostName: room.hostName,
+        users: room.users,
+        currentSong: room.currentSong,
+        permissions: room.permissions,
+      };
+
+      if (typeof callback === "function") {
+        callback({
+          success: true,
+          room: clientRoomState,
+          username: userName,
+          localIp: LOCAL_IP,
+          queue: role === "host" ? room.queue : [],
+        });
+      }
+    },
+  );
+
   // Add Song
-  socket.on('song:add', ({ song }, callback) => {
+  socket.on("song:add", ({ song }, callback) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room) return;
 
     // Concurrency / Duplicate track suggestion check
-    const isDuplicate = 
-      (room.currentSong && (room.currentSong.url === song.url || room.currentSong.id === song.id)) ||
-      room.queue.some(qSong => qSong.url === song.url || qSong.id === song.id);
+    const isDuplicate =
+      (room.currentSong &&
+        (room.currentSong.url === song.url ||
+          room.currentSong.id === song.id)) ||
+      room.queue.some(
+        (qSong) => qSong.url === song.url || qSong.id === song.id,
+      );
 
     if (isDuplicate) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'This song is already playing or in the queue!' });
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          message: "This song is already playing or in the queue!",
+        });
       }
       return;
     }
@@ -852,8 +1034,8 @@ io.on('connection', (socket) => {
     const newSong = {
       ...song,
       id: Math.random().toString(36).substring(2, 9),
-      addedBy: userName || 'Guest',
-      addedAt: Date.now()
+      addedBy: userName || "Guest",
+      addedAt: Date.now(),
     };
 
     if (!room.currentSong) {
@@ -862,41 +1044,53 @@ io.on('connection', (socket) => {
         ...newSong,
         isPlaying: true,
         progress: 0,
-        startTime: Date.now()
+        startTime: Date.now(),
       };
-      
+
       // Notify all users in the room of the new playing song
-      io.to(userRoomCode).emit('song:change', room.currentSong);
-      logRoomEvent(room, `Playing first suggested song: "${newSong.title}" (added by ${newSong.addedBy})`);
-      
+      io.to(userRoomCode).emit("song:change", room.currentSong);
+      logRoomEvent(
+        room,
+        `Playing first suggested song: "${newSong.title}" (added by ${newSong.addedBy})`,
+      );
+
       // Asynchronously pre-generate the autoplayQueue
       fillAutoplayQueue(room, userRoomCode, room.currentSong);
     } else {
       // Otherwise put it in the queue
       room.queue.push(newSong);
-      logRoomEvent(room, `Added "${newSong.title}" to queue (suggested by ${newSong.addedBy})`);
+      room.queue = rebalanceQueue(room.queue);
+      logRoomEvent(
+        room,
+        `Added "${newSong.title}" to queue (suggested by ${newSong.addedBy})`,
+      );
     }
 
     resetRoomActivity(userRoomCode);
 
     // Notify host of full queue updates
-    io.to(room.hostSocketId).emit('queue:update', room.queue);
+    io.to(room.hostSocketId).emit("queue:update", room.queue);
 
     // Send success notification to client
-    if (typeof callback === 'function') {
+    if (typeof callback === "function") {
       callback({ success: true });
     }
   });
 
   // Play/Pause Song (Host or permitted Guest)
-  socket.on('playback:state-change', ({ isPlaying }) => {
+  socket.on("playback:state-change", ({ isPlaying }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room) return;
 
     // Enforce host or guest play/pause permissions
-    if (room.hostSocketId !== socket.id && !room.permissions.allowGuestPlayPause) {
-      console.warn(`Unauthorized playback state-change request from guest socket: ${socket.id}`);
+    if (
+      room.hostSocketId !== socket.id &&
+      !room.permissions.allowGuestPlayPause
+    ) {
+      console.warn(
+        `Unauthorized playback state-change request from guest socket: ${socket.id}`,
+      );
       return;
     }
 
@@ -904,18 +1098,21 @@ io.on('connection', (socket) => {
 
     if (room.currentSong) {
       room.currentSong.isPlaying = isPlaying;
-      logRoomEvent(room, `Playback ${isPlaying ? 'resumed' : 'paused'} by ${room.hostSocketId === socket.id ? 'host' : 'guest ' + userName}`);
+      logRoomEvent(
+        room,
+        `Playback ${isPlaying ? "resumed" : "paused"} by ${room.hostSocketId === socket.id ? "host" : "guest " + userName}`,
+      );
       // Broadcast update to everyone
-      io.to(userRoomCode).emit('playback:sync', {
+      io.to(userRoomCode).emit("playback:sync", {
         isPlaying,
         progress: room.currentSong.progress,
-        songId: room.currentSong.id
+        songId: room.currentSong.id,
       });
     }
   });
 
   // Progress Seek (Host or permitted Guest)
-  socket.on('playback:seek', ({ progress }) => {
+  socket.on("playback:seek", ({ progress }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || !room.currentSong) return;
@@ -929,17 +1126,20 @@ io.on('connection', (socket) => {
     resetRoomActivity(userRoomCode);
 
     room.currentSong.progress = progress;
-    logRoomEvent(room, `Playback seeked to ${Math.round(progress)}s by ${room.hostSocketId === socket.id ? 'host' : 'guest ' + userName}`);
+    logRoomEvent(
+      room,
+      `Playback seeked to ${Math.round(progress)}s by ${room.hostSocketId === socket.id ? "host" : "guest " + userName}`,
+    );
     // Broadcast seek event to everyone in the room
-    io.to(userRoomCode).emit('playback:seek', {
+    io.to(userRoomCode).emit("playback:seek", {
       progress,
       isPlaying: room.currentSong.isPlaying,
-      songId: room.currentSong.id
+      songId: room.currentSong.id,
     });
   });
 
   // Progress Update (Periodically sent by Host)
-  socket.on('playback:progress-update', ({ progress, isPlaying }) => {
+  socket.on("playback:progress-update", ({ progress, isPlaying }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
@@ -947,18 +1147,18 @@ io.on('connection', (socket) => {
     if (room.currentSong) {
       room.currentSong.progress = progress;
       room.currentSong.isPlaying = isPlaying;
-      
+
       // Broadcast progress syncing to guests
-      socket.to(userRoomCode).emit('playback:sync', {
+      socket.to(userRoomCode).emit("playback:sync", {
         isPlaying,
         progress,
-        songId: room.currentSong.id
+        songId: room.currentSong.id,
       });
     }
   });
 
   // Host or permitted Guest skips song (or song ends and auto-skips)
-  socket.on('song:skip', ({ songId } = {}) => {
+  socket.on("song:skip", ({ songId } = {}) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room) return;
@@ -971,12 +1171,17 @@ io.on('connection', (socket) => {
 
     // Bulletproof skip: Only skip if the request specifies the currently playing songId
     if (songId && room.currentSong && room.currentSong.id !== songId) {
-      console.log(`Ignoring stale song:skip request for song ID: ${songId}. Current song ID: ${room.currentSong.id}`);
+      console.log(
+        `Ignoring stale song:skip request for song ID: ${songId}. Current song ID: ${room.currentSong.id}`,
+      );
       return;
     }
 
     const previousSong = room.currentSong;
-    logRoomEvent(room, `Song skipped by ${room.hostSocketId === socket.id ? 'host' : 'guest ' + userName}: "${previousSong ? previousSong.title : 'None'}"`);
+    logRoomEvent(
+      room,
+      `Song skipped by ${room.hostSocketId === socket.id ? "host" : "guest " + userName}: "${previousSong ? previousSong.title : "None"}"`,
+    );
 
     if (room.queue.length > 0) {
       const nextSong = room.queue.shift();
@@ -984,13 +1189,13 @@ io.on('connection', (socket) => {
         ...nextSong,
         isPlaying: true,
         progress: 0,
-        startTime: Date.now()
+        startTime: Date.now(),
       };
       // Broadcast new state
-      io.to(userRoomCode).emit('song:change', room.currentSong);
+      io.to(userRoomCode).emit("song:change", room.currentSong);
       // Send updated queue to host
-      io.to(room.hostSocketId).emit('queue:update', room.queue);
-      
+      io.to(room.hostSocketId).emit("queue:update", room.queue);
+
       // Asynchronously replenish prospective queue based on the new playing song!
       fillAutoplayQueue(room, userRoomCode, room.currentSong);
     } else {
@@ -999,14 +1204,17 @@ io.on('connection', (socket) => {
   });
 
   // Playback Error reported by Host (e.g. copyright block, embedding disabled)
-  socket.on('playback:error', ({ songId, errorCode }) => {
+  socket.on("playback:error", ({ songId, errorCode }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
 
     if (room.currentSong && room.currentSong.id === songId) {
-      logRoomEvent(room, `Playback error (${errorCode}) on song "${room.currentSong.title}". Triggering auto-skip.`);
-      
+      logRoomEvent(
+        room,
+        `Playback error (${errorCode}) on song "${room.currentSong.title}". Triggering auto-skip.`,
+      );
+
       const previousSong = room.currentSong;
 
       if (room.queue.length > 0) {
@@ -1015,10 +1223,10 @@ io.on('connection', (socket) => {
           ...nextSong,
           isPlaying: true,
           progress: 0,
-          startTime: Date.now()
+          startTime: Date.now(),
         };
-        io.to(userRoomCode).emit('song:change', room.currentSong);
-        io.to(room.hostSocketId).emit('queue:update', room.queue);
+        io.to(userRoomCode).emit("song:change", room.currentSong);
+        io.to(room.hostSocketId).emit("queue:update", room.queue);
       } else {
         playRelatedSong(userRoomCode, previousSong);
       }
@@ -1026,23 +1234,26 @@ io.on('connection', (socket) => {
   });
 
   // Host removes song from queue
-  socket.on('song:remove-from-queue', ({ songId }) => {
+  socket.on("song:remove-from-queue", ({ songId }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
 
     resetRoomActivity(userRoomCode);
 
-    const removedSong = room.queue.find(song => song.id === songId);
-    room.queue = room.queue.filter(song => song.id !== songId);
-    logRoomEvent(room, `Removed song from queue: "${removedSong ? removedSong.title : songId}"`);
-    
+    const removedSong = room.queue.find((song) => song.id === songId);
+    room.queue = room.queue.filter((song) => song.id !== songId);
+    logRoomEvent(
+      room,
+      `Removed song from queue: "${removedSong ? removedSong.title : songId}"`,
+    );
+
     // Update queue list on Host
-    io.to(room.hostSocketId).emit('queue:update', room.queue);
+    io.to(room.hostSocketId).emit("queue:update", room.queue);
   });
 
   // Host reorders queue list
-  socket.on('queue:reorder', ({ queueIds }) => {
+  socket.on("queue:reorder", ({ queueIds }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
@@ -1050,14 +1261,14 @@ io.on('connection', (socket) => {
     resetRoomActivity(userRoomCode);
 
     const reorderedQueue = [];
-    queueIds.forEach(id => {
-      const song = room.queue.find(q => q.id === id);
+    queueIds.forEach((id) => {
+      const song = room.queue.find((q) => q.id === id);
       if (song) reorderedQueue.push(song);
     });
 
     // Make sure to add back any songs that were missed due to concurrency anomalies
-    room.queue.forEach(song => {
-      if (!reorderedQueue.some(q => q.id === song.id)) {
+    room.queue.forEach((song) => {
+      if (!reorderedQueue.some((q) => q.id === song.id)) {
         reorderedQueue.push(song);
       }
     });
@@ -1066,38 +1277,41 @@ io.on('connection', (socket) => {
     logRoomEvent(room, "Host reordered active room queue");
 
     // Broadcast updated queue to host
-    io.to(room.hostSocketId).emit('queue:update', room.queue);
+    io.to(room.hostSocketId).emit("queue:update", room.queue);
   });
 
   // Host updates active room permissions dynamically
-  socket.on('room:update-permissions', ({ permissions }) => {
+  socket.on("room:update-permissions", ({ permissions }) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
 
     room.permissions = {
       ...room.permissions,
-      ...permissions
+      ...permissions,
     };
 
-    logRoomEvent(room, `Host updated active room permissions to: ${JSON.stringify(room.permissions)}`);
+    logRoomEvent(
+      room,
+      `Host updated active room permissions to: ${JSON.stringify(room.permissions)}`,
+    );
 
     // Broadcast updated permissions to everyone in the room
-    io.to(userRoomCode).emit('room:permissions-update', room.permissions);
+    io.to(userRoomCode).emit("room:permissions-update", room.permissions);
   });
 
   // Host kicks a user from the room
-  socket.on('user:kick', ({ socketId: kickSocketId }, callback) => {
+  socket.on("user:kick", ({ socketId: kickSocketId }, callback) => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
 
     resetRoomActivity(userRoomCode);
 
-    const kickedUser = room.users.find(u => u.socketId === kickSocketId);
+    const kickedUser = room.users.find((u) => u.socketId === kickSocketId);
     if (!kickedUser || kickedUser.isHost) {
-      if (typeof callback === 'function') {
-        callback({ success: false, message: 'Cannot kick this user.' });
+      if (typeof callback === "function") {
+        callback({ success: false, message: "Cannot kick this user." });
       }
       return;
     }
@@ -1106,34 +1320,40 @@ io.on('connection', (socket) => {
     logRoomEvent(room, `Host kicked user: "${kickedName}"`);
 
     // Remove user from the room's users list
-    room.users = room.users.filter(u => u.socketId !== kickSocketId);
+    room.users = room.users.filter((u) => u.socketId !== kickSocketId);
 
     // Remove all songs added by the kicked user from the queue
     const prevQueueLength = room.queue.length;
-    room.queue = room.queue.filter(song => song.addedBy !== kickedName);
+    room.queue = room.queue.filter((song) => song.addedBy !== kickedName);
     if (room.queue.length !== prevQueueLength) {
-      logRoomEvent(room, `Removed ${prevQueueLength - room.queue.length} queue songs suggested by kicked user "${kickedName}"`);
+      logRoomEvent(
+        room,
+        `Removed ${prevQueueLength - room.queue.length} queue songs suggested by kicked user "${kickedName}"`,
+      );
     }
 
     // If the currently playing song was added by the kicked user, skip it
     if (room.currentSong && room.currentSong.addedBy === kickedName) {
-      logRoomEvent(room, `Skipping current song suggested by kicked user: "${kickedName}"`);
+      logRoomEvent(
+        room,
+        `Skipping current song suggested by kicked user: "${kickedName}"`,
+      );
       if (room.queue.length > 0) {
         const nextSong = room.queue.shift();
         room.currentSong = {
           ...nextSong,
           isPlaying: true,
           progress: 0,
-          startTime: Date.now()
+          startTime: Date.now(),
         };
       } else {
         room.currentSong = null;
       }
-      io.to(userRoomCode).emit('song:change', room.currentSong);
+      io.to(userRoomCode).emit("song:change", room.currentSong);
     }
 
     // Notify the kicked user
-    io.to(kickSocketId).emit('user:kicked', { reason: 'Removed by host' });
+    io.to(kickSocketId).emit("user:kicked", { reason: "Removed by host" });
 
     // Force the kicked socket to leave the room channel
     const kickedSocket = io.sockets.sockets.get(kickSocketId);
@@ -1142,27 +1362,30 @@ io.on('connection', (socket) => {
     }
 
     // Broadcast updated user list and queue
-    io.to(userRoomCode).emit('room:user-update', room.users);
-    io.to(room.hostSocketId).emit('queue:update', room.queue);
+    io.to(userRoomCode).emit("room:user-update", room.users);
+    io.to(room.hostSocketId).emit("queue:update", room.queue);
 
-    if (typeof callback === 'function') {
+    if (typeof callback === "function") {
       callback({ success: true });
     }
   });
 
   // Extend room session activity
-  socket.on('room:continue-activity', () => {
+  socket.on("room:continue-activity", () => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room) return;
 
-    logRoomEvent(room, `Room inactivity warning dismissed by user: "${userName || socket.id}"`);
+    logRoomEvent(
+      room,
+      `Room inactivity warning dismissed by user: "${userName || socket.id}"`,
+    );
     resetRoomActivity(userRoomCode);
-    io.to(userRoomCode).emit('room:inactivity-cancelled');
+    io.to(userRoomCode).emit("room:inactivity-cancelled");
   });
 
   // Host ends room session
-  socket.on('room:end', () => {
+  socket.on("room:end", () => {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room || room.hostSocketId !== socket.id) return;
@@ -1171,17 +1394,17 @@ io.on('connection', (socket) => {
 
     clearRoomTimers(userRoomCode);
 
-    io.to(userRoomCode).emit('room:ended');
+    io.to(userRoomCode).emit("room:ended");
     rooms.delete(userRoomCode);
   });
 
   // User leaves room manually
-  socket.on('room:leave', () => {
+  socket.on("room:leave", () => {
     handleLeave();
   });
 
   // Connection lost
-  socket.on('disconnect', () => {
+  socket.on("disconnect", () => {
     handleLeave();
   });
 
@@ -1193,9 +1416,9 @@ io.on('connection', (socket) => {
     if (room.hostSocketId === socket.id) {
       // Host disconnected: start grace period
       logRoomEvent(room, "Host disconnected. Starting 15s grace period.");
-      
+
       // Notify guests that host is temporarily offline
-      io.to(userRoomCode).emit('room:host-status', { connected: false });
+      io.to(userRoomCode).emit("room:host-status", { connected: false });
 
       // Clear any existing timer
       if (roomDisconnectTimers.has(userRoomCode)) {
@@ -1204,8 +1427,8 @@ io.on('connection', (socket) => {
 
       const timer = setTimeout(() => {
         console.log(`Grace period expired. Closing room: ${userRoomCode}`);
-        io.to(userRoomCode).emit('room:ended');
-        
+        io.to(userRoomCode).emit("room:ended");
+
         clearRoomTimers(userRoomCode);
         rooms.delete(userRoomCode);
       }, 15000); // 15 seconds
@@ -1213,11 +1436,11 @@ io.on('connection', (socket) => {
       roomDisconnectTimers.set(userRoomCode, timer);
     } else {
       // Guest disconnected: remove user
-      const leavingUser = room.users.find(u => u && u.socketId === socket.id);
-      const disconnectedName = leavingUser ? leavingUser.name : 'Unknown Guest';
-      room.users = room.users.filter(u => u && u.socketId !== socket.id);
+      const leavingUser = room.users.find((u) => u && u.socketId === socket.id);
+      const disconnectedName = leavingUser ? leavingUser.name : "Unknown Guest";
+      room.users = room.users.filter((u) => u && u.socketId !== socket.id);
       logRoomEvent(room, `Guest left room: "${disconnectedName}"`);
-      io.to(userRoomCode).emit('room:user-update', room.users);
+      io.to(userRoomCode).emit("room:user-update", room.users);
       resetRoomActivity(userRoomCode);
     }
 
