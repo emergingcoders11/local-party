@@ -22,8 +22,6 @@ import {
   Volume2,
   VolumeX,
   Layers,
-  Settings,
-  Wifi,
   Lock,
   X,
   Search,
@@ -37,8 +35,67 @@ import { SongSearchModal } from './components/SongSearchModal';
 import { RoomQRModal } from './components/RoomQRModal';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { InactivityWarningModal } from './components/InactivityWarningModal';
+import { FeedbackModal } from './components/FeedbackModal';
 import type { Song, PlayableSong } from './types';
 import './App.css';
+
+const getSystemIpAddress = (): Promise<string> => {
+  return new Promise((resolve) => {
+    try {
+      const RTCPeerConnectionClass = window.RTCPeerConnection || 
+        (window as any).webkitRTCPeerConnection || 
+        (window as any).mozRTCPeerConnection;
+        
+      if (!RTCPeerConnectionClass) {
+        resolve('');
+        return;
+      }
+
+      const pc = new RTCPeerConnectionClass({ iceServers: [] });
+      pc.createDataChannel('');
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .catch(() => {});
+      
+      let resolved = false;
+      pc.onicecandidate = (ice) => {
+        if (resolved) return;
+        if (!ice || !ice.candidate || !ice.candidate.candidate) {
+          return;
+        }
+        const candidate = ice.candidate.candidate;
+        // Look for an IPv4 address
+        const ipRegex = /([0-9]{1,3}(\.[0-9]{1,3}){3})/;
+        const match = candidate.match(ipRegex);
+        if (match) {
+          resolved = true;
+          resolve(match[1]);
+          pc.close();
+        } else {
+          // Look for an IPv6 or mDNS address (.local)
+          const mdnsRegex = /([a-zA-Z0-9-]+\.local)/;
+          const mdnsMatch = candidate.match(mdnsRegex);
+          if (mdnsMatch) {
+            resolved = true;
+            resolve(mdnsMatch[1]);
+            pc.close();
+          }
+        }
+      };
+      
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          pc.close();
+          resolve('');
+        }
+      }, 500);
+    } catch (e) {
+      resolve('');
+    }
+  });
+};
+
 
 declare global {
   interface Window {
@@ -65,6 +122,7 @@ interface DiscoveredRoom {
   hostName: string;
   userCount: number;
   isPrivate: boolean;
+  isLocal?: boolean;
   currentSong: {
     title: string;
     artist: string;
@@ -91,12 +149,14 @@ function App() {
   // Room password
   const [roomPassword, setRoomPassword] = useState('');
   const [isPrivateRoom, setIsPrivateRoom] = useState(false);
+  const [isUnlistedRoom, setIsUnlistedRoom] = useState(false);
   const [joinPassword, setJoinPassword] = useState('');
   
   // Active Room details
   const [roomCode, setRoomCode] = useState('');
   const [roomName, setRoomName] = useState('');
   const [hostLocalIp, setHostLocalIp] = useState('');
+  const [clientSystemIp, setClientSystemIp] = useState('');
   const [users, setUsers] = useState<RoomUser[]>([]);
   const [myUsername, setMyUsername] = useState('');
   
@@ -122,13 +182,13 @@ function App() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isQrOpen, setIsQrOpen] = useState(false);
   const [isConfirmEndOpen, setIsConfirmEndOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [discoveredRooms, setDiscoveredRooms] = useState<DiscoveredRoom[]>([]);
 
   // Inactivity warning state
   const [isInactivityWarningOpen, setIsInactivityWarningOpen] = useState(false);
   const [inactivityCountdown, setInactivityCountdown] = useState(120);
-
   const filteredDiscoveredRooms = discoveredRooms.filter((r) => {
     const query = roomSearchQuery.trim().toLowerCase();
     if (!query) return true;
@@ -156,40 +216,58 @@ function App() {
   const [isArchived, setIsArchived] = useState(false);
 
   const isLocalHostAddress = (hostStr: string) => {
+    if (!hostStr) return false;
     const clean = hostStr.replace(/^https?:\/\//, '').split(':')[0];
     return ['localhost', '127.0.0.1', '::1'].includes(clean) || 
       clean.startsWith('192.168.') || 
+      clean.startsWith('192.138.') || 
       clean.startsWith('10.') || 
-      clean.startsWith('172.');
+      clean.startsWith('172.') ||
+      clean.endsWith('.local');
   };
 
   const [backendHost, setBackendHost] = useState<string>(() => {
+    const envHost = import.meta.env.VITE_BACKEND_HOST as string;
+    const hostname = window.location.hostname;
+    
+    const isLocalHostname = isLocalHostAddress(hostname);
+    const isLocalEnvHost = envHost && isLocalHostAddress(envHost);
+    
+    // If running/testing locally via local hostname or local env variable, enforce local server
+    if (isLocalHostname || isLocalEnvHost) {
+      if (envHost) {
+        return envHost;
+      }
+      const protocol = window.location.protocol === 'https:' ? 'https://' : 'http://';
+      const cleanHostname = hostname.replace(/^https?:\/\//, '').split(':')[0];
+      return `${protocol}${cleanHostname}:3001`;
+    }
+
+    // In production, prioritize the environment variable VITE_BACKEND_HOST over localStorage
+    if (envHost) return envHost;
+
     const saved = localStorage.getItem('backend_host');
     if (saved) return saved;
 
-    const envHost = import.meta.env.VITE_BACKEND_HOST as string;
-    if (envHost) return envHost;
-
-    const hostname = window.location.hostname;
-    // Auto prefill port :3001 if local IP or localhost
-    const isIpOrLocal = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.') || hostname.startsWith('172.');
-    
-    if (isIpOrLocal) {
-      return `${hostname}:3001`;
-    }
     // Default global production backend
     return 'local-party-backend.onrender.com';
   });
-  const [isHostOnline, setIsHostOnline] = useState(true);
-  const [showSettings, setShowSettings] = useState(false);
-  const [ipInput, setIpInput] = useState(backendHost);
-  const [isLocalDiscoveryOnly, setIsLocalDiscoveryOnly] = useState(() => isLocalHostAddress(backendHost));
 
-  // Sync ipInput and isLocalDiscoveryOnly when backendHost changes
+  const [isHostOnline, setIsHostOnline] = useState(true);
+
+  // Resolve client local LAN IP on mount for sharing links fallback
   useEffect(() => {
-    setIpInput(backendHost);
-    setIsLocalDiscoveryOnly(isLocalHostAddress(backendHost));
-  }, [backendHost]);
+    getSystemIpAddress().then((resolved) => {
+      if (resolved && (
+        resolved.startsWith('192.168.') || 
+        resolved.startsWith('192.138.') || 
+        resolved.startsWith('10.') || 
+        resolved.startsWith('172.')
+      )) {
+        setClientSystemIp(resolved);
+      }
+    });
+  }, []);
 
   const [isScrolled, setIsScrolled] = useState(false);
 
@@ -212,6 +290,7 @@ function App() {
   const loadedVideoIdRef = useRef<string>('');
   const watchdogCountRef = useRef<number>(0);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const qrScanTimeoutRef = useRef<any>(null);
 
   const userRoleRef = useRef<string | null>(null);
   const currentViewRef = useRef<string>('landing');
@@ -265,6 +344,15 @@ function App() {
         console.log("YouTube API ready.");
       };
     }
+  }, []);
+
+  // Clean up QR scan timer on unmount
+  useEffect(() => {
+    return () => {
+      if (qrScanTimeoutRef.current) {
+        clearTimeout(qrScanTimeoutRef.current);
+      }
+    };
   }, []);
 
   // Auto-reconnect on mount if room session exists
@@ -515,7 +603,7 @@ function App() {
         updatePlaybackProgress(progress);
         
         const playerState = player.getPlayerState();
-        const isActuallyPlaying = playerState === 1;
+        const isActuallyPlaying = playerState === 1 || playerState === 3;
 
         // Watchdog: auto-skip if playing but stuck at 0s for 8s
         // At 300ms intervals, 8 seconds is ~26 checks
@@ -578,7 +666,13 @@ function App() {
     socket.on('connect_error', () => {
       connectErrorCount++;
       if (connectErrorCount === 1) {
-        showToast('Connecting to server (waking up Render backend if idle)...', 'info');
+        const isLocal = isLocalHostAddress(targetHost);
+        showToast(
+          isLocal 
+            ? 'Connecting to local server...' 
+            : 'Connecting to server (waking up Render backend if idle)...', 
+          'info'
+        );
       } else if (connectErrorCount % 5 === 0) {
         showToast('Connection to server is taking longer than usual. Please verify if server.js is running.', 'error');
       }
@@ -597,14 +691,15 @@ function App() {
         try {
           const { roomCode: savedRoomCode, role: savedRole, myUsername: savedUsername, password: savedPassword } = JSON.parse(savedSession);
           if (savedRoomCode && savedRole && savedUsername) {
-            console.log(`Auto-restoring session for room ${savedRoomCode}...`);
-            socket.emit('room:reconnect', {
-              roomCode: savedRoomCode,
-              role: savedRole,
-              username: savedUsername,
-              password: savedPassword || undefined
-            }, (res: any) => {
-              if (res.success) {
+            getSystemIpAddress().then((resolvedIp) => {
+              socket.emit('room:reconnect', {
+                roomCode: savedRoomCode,
+                role: savedRole,
+                username: savedUsername,
+                password: savedPassword || undefined,
+                systemIp: resolvedIp || undefined
+              }, (res: any) => {
+                if (res.success) {
                 console.log(`Successfully reconnected to room ${savedRoomCode}`);
                 setUserRole(savedRole);
                 setRoomPermissions(res.room.permissions);
@@ -634,6 +729,7 @@ function App() {
                 disconnectSession();
               }
             });
+          });
           }
         } catch (e) {
           console.error('Failed to parse saved session on connect:', e);
@@ -672,7 +768,11 @@ function App() {
 
     socket.on('playback:sync', ({ isPlaying: serverPlaying, progress }) => {
       setIsPlaying(serverPlaying);
-      setCurrentSong(prev => prev ? { ...prev, isPlaying: serverPlaying } : null);
+      setCurrentSong(prev => {
+        if (!prev) return null;
+        if (prev.isPlaying === serverPlaying) return prev;
+        return { ...prev, isPlaying: serverPlaying };
+      });
       
       if (ytPlayerRef.current && isPlayerReadyRef.current) {
         const player = ytPlayerRef.current;
@@ -686,10 +786,10 @@ function App() {
           player.pauseVideo();
         }
         
-        // For guest, also sync progress if they are too far off (e.g. > 1.2 seconds)
+        // For guest, also sync progress if they are too far off (e.g. > 3.0 seconds)
         if (userRoleRef.current !== 'host' && typeof player.getCurrentTime === 'function' && typeof player.seekTo === 'function') {
           const guestTime = player.getCurrentTime();
-          if (Math.abs(guestTime - progress) > 1.2) {
+          if (Math.abs(guestTime - progress) > 3.0) {
             player.seekTo(progress, true);
           }
         }
@@ -719,7 +819,7 @@ function App() {
     });
 
     socket.on('room:ended', () => {
-      showToast('The party session has been ended by the host.', 'info');
+      showToast('Admin has closed the room.', 'info');
       disconnectSession();
     });
 
@@ -772,8 +872,9 @@ function App() {
     // Disconnect socket
     if (socketRef.current) {
       socketRef.current.emit('room:leave');
-      socketRef.current.disconnect();
+      const tempSocket = socketRef.current;
       socketRef.current = null;
+      tempSocket.disconnect();
     }
 
     // Reset States
@@ -823,47 +924,52 @@ function App() {
 
     const socket = connectSocket();
 
-    socket.emit('room:create', { 
-      roomName: partyName, 
-      hostName: hostNameClean,
-      password: isPrivateRoom ? roomPassword : null,
-      permissions: {
-        allowGuestSkip,
-        allowGuestSeek,
-        allowGuestPlayPause,
-        guestMuteByDefault,
-        displayGuestVideo
-      }
-    }, (res: any) => {
-      if (res.success) {
-        setUserRole('host');
-        setRoomPermissions(res.room.permissions);
-        setAutoplayQueue([]);
-        setRoomCode(res.roomCode);
-        setRoomName(partyName);
-        setHostLocalIp(res.localIp);
-        setMyUsername(hostNameClean);
-        setUsers(res.room.users);
-        setCurrentView('player');
+    getSystemIpAddress().then((resolvedIp) => {
+      socket.emit('room:create', { 
+        roomName: partyName, 
+        hostName: hostNameClean,
+        password: isPrivateRoom ? roomPassword : null,
+        isUnlisted: isUnlistedRoom,
+        systemIp: resolvedIp || undefined,
+        permissions: {
+          allowGuestSkip,
+          allowGuestSeek,
+          allowGuestPlayPause,
+          guestMuteByDefault,
+          displayGuestVideo
+        }
+      }, (res: any) => {
+        if (res.success) {
+          setUserRole('host');
+          setRoomPermissions(res.room.permissions);
+          setAutoplayQueue([]);
+          setRoomCode(res.roomCode);
+          setRoomName(partyName);
+          setHostLocalIp(res.localIp);
+          setMyUsername(hostNameClean);
+          setUsers(res.room.users);
+          setCurrentView('player');
 
-        const cleanPassword = isPrivateRoom ? roomPassword.trim() : null;
-        sessionStorage.setItem('room_session', JSON.stringify({
-          roomCode: res.roomCode,
-          roomName: partyName,
-          role: 'host',
-          myUsername: hostNameClean,
-          backendHost: backendHost,
-          password: cleanPassword || undefined
-        }));
+          const cleanPassword = isPrivateRoom ? roomPassword.trim() : null;
+          sessionStorage.setItem('room_session', JSON.stringify({
+            roomCode: res.roomCode,
+            roomName: partyName,
+            role: 'host',
+            myUsername: hostNameClean,
+            backendHost: backendHost,
+            password: cleanPassword || undefined
+          }));
 
-        // Clear password state
-        setRoomPassword('');
-        setIsPrivateRoom(false);
+          // Clear password and unlisted states
+          setRoomPassword('');
+          setIsPrivateRoom(false);
+          setIsUnlistedRoom(false);
 
-        showToast('Room created successfully!', 'success');
-      } else {
-        showToast(res.message || 'Could not create room', 'error');
-      }
+          showToast('Room created successfully!', 'success');
+        } else {
+          showToast(res.message || 'Could not create room', 'error');
+        }
+      });
     });
   };
 
@@ -882,43 +988,46 @@ function App() {
 
     const socket = connectSocket();
 
-    socket.emit('room:join', { 
-      roomCode: roomCodeInput, 
-      name: guestNameClean,
-      password: joinPassword
-    }, (res: any) => {
-      if (res.success) {
-        setUserRole('guest');
-        setRoomPermissions(res.room.permissions);
-        setAutoplayQueue([]);
-        // Initial mute state: default to muted if permissions specify guestMuteByDefault
-        setIsMuted(res.room.permissions?.guestMuteByDefault ?? true);
-        setRoomCode(res.room.roomCode);
-        setRoomName(res.room.roomName);
-        setHostLocalIp(res.localIp);
-        setMyUsername(res.username);
-        setUsers(res.room.users);
-        setCurrentSong(res.room.currentSong);
-        setCurrentView('player');
+    getSystemIpAddress().then((resolvedIp) => {
+      socket.emit('room:join', { 
+        roomCode: roomCodeInput, 
+        name: guestNameClean,
+        password: joinPassword,
+        systemIp: resolvedIp || undefined
+      }, (res: any) => {
+        if (res.success) {
+          setUserRole('guest');
+          setRoomPermissions(res.room.permissions);
+          setAutoplayQueue([]);
+          // Initial mute state: default to muted if permissions specify guestMuteByDefault
+          setIsMuted(res.room.permissions?.guestMuteByDefault ?? true);
+          setRoomCode(res.room.roomCode);
+          setRoomName(res.room.roomName);
+          setHostLocalIp(res.localIp);
+          setMyUsername(res.username);
+          setUsers(res.room.users);
+          setCurrentSong(res.room.currentSong);
+          setCurrentView('player');
 
-        sessionStorage.setItem('room_session', JSON.stringify({
-          roomCode: res.room.roomCode,
-          roomName: res.room.roomName,
-          role: 'guest',
-          myUsername: res.username,
-          backendHost: backendHost,
-          password: joinPassword.trim() || undefined
-        }));
+          sessionStorage.setItem('room_session', JSON.stringify({
+            roomCode: res.room.roomCode,
+            roomName: res.room.roomName,
+            role: 'guest',
+            myUsername: res.username,
+            backendHost: backendHost,
+            password: joinPassword.trim() || undefined
+          }));
 
-        // Clear password state
-        setJoinPassword('');
+          // Clear password state
+          setJoinPassword('');
 
-        showToast(`Joined party room!`, 'success');
-      } else {
-        showToast(res.message || 'Room not found or incorrect password.', 'error');
-        socket.disconnect();
-        socketRef.current = null;
-      }
+          showToast(`Joined party room!`, 'success');
+        } else {
+          showToast(res.message || 'Room not found or incorrect password.', 'error');
+          socketRef.current = null;
+          socket.disconnect();
+        }
+      });
     });
   };
 
@@ -1216,12 +1325,10 @@ function App() {
   }, [currentSong, isPlaying, roomPermissions, userRole]);
 
   // Discovery Action: Fetch Nearby Rooms
-  const fetchNearbyRooms = async (silent = false, forceLocal = false) => {
+  const fetchNearbyRooms = async (silent = false) => {
     try {
       const serverUrl = getServerUrl(backendHost);
-      const useLocalParam = forceLocal || isLocalDiscoveryOnly || isLocalHostAddress(backendHost);
-      const queryParam = useLocalParam ? '?local=true' : '';
-      const res = await fetch(`${serverUrl}/api/rooms${queryParam}`);
+      const res = await fetch(`${serverUrl}/api/rooms`);
       if (res.ok) {
         const data = await res.json();
         setDiscoveredRooms(data);
@@ -1245,7 +1352,7 @@ function App() {
       const interval = setInterval(() => fetchNearbyRooms(true), 5000);
       return () => clearInterval(interval);
     }
-  }, [currentView, backendHost, isLocalDiscoveryOnly]);
+  }, [currentView, backendHost]);
 
   const selectDiscoveredRoom = (code: string) => {
     setRoomCodeInput(code);
@@ -1253,37 +1360,15 @@ function App() {
     showToast(`Pre-filled room code: ${code}`, 'success');
   };
 
-  const handleSaveSettings = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanIp = ipInput.trim();
-    if (!cleanIp) {
-      showToast('Server IP address is required.', 'error');
-      return;
-    }
-
-    let formattedHost = cleanIp;
-    if (!formattedHost.includes('://')) {
-      if (!formattedHost.includes(':')) {
-        formattedHost = `${formattedHost}:3001`;
-      }
-    }
-
-    // Disconnect active socket if server IP changes so next connection uses the new IP
-    if (socketRef.current) {
-      socketRef.current.disconnect();
-      socketRef.current = null;
-    }
-    setBackendHost(formattedHost);
-    localStorage.setItem('backend_host', formattedHost);
-    showToast(`Server Host IP set to: ${formattedHost}`, 'success');
-    setShowSettings(false);
-  };
-
   const handleSimulateQRScan = () => {
     setIsScanningQR(true);
+    if (qrScanTimeoutRef.current) {
+      clearTimeout(qrScanTimeoutRef.current);
+    }
     // Simulate camera activation delay, then auto-fill code if present in URL, or mock fill
-    setTimeout(() => {
+    qrScanTimeoutRef.current = setTimeout(() => {
       setIsScanningQR(false);
+      qrScanTimeoutRef.current = null;
       // Hardcode a mock scan code or pull from active list
       if (discoveredRooms.length > 0) {
         const mockCode = discoveredRooms[0].roomCode;
@@ -1294,6 +1379,15 @@ function App() {
         showToast('QR Code Scanned! (Mock Room: PARTY)', 'info');
       }
     }, 2500);
+  };
+
+  const handleCancelQRScan = () => {
+    if (qrScanTimeoutRef.current) {
+      clearTimeout(qrScanTimeoutRef.current);
+      qrScanTimeoutRef.current = null;
+    }
+    setIsScanningQR(false);
+    showToast("QR scanning cancelled.", "info");
   };
 
   const formatTime = (secs: number) => {
@@ -1438,7 +1532,7 @@ function App() {
               {/* Hero Label */}
               <div className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-spotify-green/10 border border-spotify-green/20 text-spotify-green text-xs font-extrabold mb-6 tracking-wide uppercase">
                 <Sparkles className="w-3.5 h-3.5" />
-                Next-Gen Global & LAN Surprise Playlist System
+                Synchronized Social Music Surprise Queue System
               </div>
 
               {/* Tagline */}
@@ -1447,7 +1541,7 @@ function App() {
               </h1>
               
               <p className="text-spotify-text text-lg md:text-xl max-w-2xl mb-10 font-medium leading-relaxed">
-                Synchronized music rooms for any crowd. Host a session globally or locally over Wi-Fi. Guests add tracks anonymously while the queue remains hidden. Let the suspense play out!
+                Host collaborative synchronized listening rooms. Invite friends, share custom room codes, and build a collaborative queue anonymously where the playlist remains hidden. Let the suspense play out!
               </p>
 
               {/* CTA Actions */}
@@ -1468,55 +1562,8 @@ function App() {
                   onClick={() => setCurrentView('discovery')}
                   className="px-6 py-4 rounded-full text-spotify-text hover:text-white font-extrabold hover:scale-105 transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  <Compass className="w-5 h-5 text-spotify-green" /> Nearby Discovery
+                  <Compass className="w-5 h-5 text-spotify-green" /> Explore Parties
                 </button>
-              </div>
-
-              {/* Server Host IP Configurator */}
-              <div className="mb-12 w-full max-w-md mx-auto relative z-20">
-                <button
-                  type="button"
-                  onClick={() => setShowSettings(!showSettings)}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 text-spotify-text hover:text-white transition text-xs font-bold cursor-pointer"
-                >
-                  <Settings className="w-4 h-4 text-spotify-green" />
-                  <span>Server Connection: <strong className="text-spotify-green">{backendHost}</strong></span>
-                </button>
-
-                <AnimatePresence>
-                  {showSettings && (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="overflow-hidden mt-4"
-                    >
-                      <form onSubmit={handleSaveSettings} className="glass-card p-5 rounded-2xl border border-white/10 flex flex-col gap-3 text-left">
-                        <h4 className="text-xs font-bold uppercase tracking-wider text-spotify-text flex items-center gap-2">
-                          <Settings className="w-3.5 h-3.5" /> Server Host IP Config
-                        </h4>
-                        <p className="text-xxs text-spotify-text/80 leading-relaxed">
-                          If you are joining from another computer or mobile device, enter the IP address of the Host PC here so you can connect.
-                        </p>
-                        <div className="flex gap-2 mt-1">
-                          <input
-                            type="text"
-                            placeholder="e.g. 192.168.1.103 or localhost"
-                            value={ipInput}
-                            onChange={(e) => setIpInput(e.target.value)}
-                            className="flex-1 px-3 py-2 bg-spotify-light-gray/60 border border-white/5 rounded-xl text-white placeholder-spotify-text focus:outline-hidden focus:border-spotify-green/50 text-xs font-semibold"
-                          />
-                          <button
-                            type="submit"
-                            className="px-4 py-2 bg-spotify-green text-black font-extrabold rounded-xl hover:scale-102 active:scale-98 text-xs cursor-pointer"
-                          >
-                            Save
-                          </button>
-                        </div>
-                      </form>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
 
               {/* Grid Features */}
@@ -1526,9 +1573,9 @@ function App() {
                   <div className="w-12 h-12 rounded-xl bg-spotify-green/10 text-spotify-green flex items-center justify-center mb-4">
                     <Radio className="w-6 h-6" />
                   </div>
-                  <h3 className="text-lg font-bold mb-2">No latency playback</h3>
+                  <h3 className="text-lg font-bold mb-2">Synchronized Playback</h3>
                   <p className="text-spotify-text text-sm leading-relaxed">
-                    Audio plays exclusively on the host’s device. Avoid lag, phone echo, and Bluetooth latency over local network.
+                    Experience high-fidelity synchronized playback. Audio streams directly in absolute synchronization using real-time offset synchronization so everyone shares the exact same musical moment.
                   </p>
                 </div>
 
@@ -1538,7 +1585,7 @@ function App() {
                   </div>
                   <h3 className="text-lg font-bold mb-2">Hidden Shared Queue</h3>
                   <p className="text-spotify-text text-sm leading-relaxed">
-                    Everyone suggests songs but only the host sees what is coming next. Guests enjoy the mystery of the next song selection.
+                    Everyone suggests songs anonymously but only the host sees what is coming next. Guests enjoy the mystery and anticipation of the next track, creating the perfect collaborative surprise.
                   </p>
                 </div>
 
@@ -1546,12 +1593,38 @@ function App() {
                   <div className="w-12 h-12 rounded-xl bg-spotify-green/10 text-spotify-green flex items-center justify-center mb-4">
                     <Compass className="w-6 h-6" />
                   </div>
-                  <h3 className="text-lg font-bold mb-2">Global & LAN Discovery</h3>
+                  <h3 className="text-lg font-bold mb-2">Seamless Global Discovery</h3>
                   <p className="text-spotify-text text-sm leading-relaxed">
-                    Host rooms globally or locally over LAN. Connect seamlessly via room codes, QR codes, or automatic Wi-Fi network detection.
+                    Establish public, private (password-protected), or unlisted rooms instantly. Connect seamlessly via sharing links, invite QR codes, or direct 5-letter room codes.
                   </p>
                 </div>
 
+              </div>
+
+              {/* Rich SEO & AEO (AI Engine Optimization) FAQ Block */}
+              <div id="specs" className="mt-20 w-full max-w-4xl border-t border-white/5 pt-12 text-left">
+                <h2 className="text-xl font-bold mb-6 text-white text-center">About LocalParty • FAQ & Features</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-spotify-text">
+                  <div className="glass-card p-5 rounded-xl border border-white/5">
+                    <h3 className="font-extrabold text-white mb-2">What is LocalParty?</h3>
+                    <p className="leading-relaxed">LocalParty is a real-time synchronized music queue system. It lets hosts establish collaborative online listening rooms where guests add songs anonymously, keeping the upcoming tracks hidden for an exciting social surprise listening experience.</p>
+                  </div>
+                  
+                  <div className="glass-card p-5 rounded-xl border border-white/5">
+                    <h3 className="font-extrabold text-white mb-2">How does synchronized listening work?</h3>
+                    <p className="leading-relaxed">The host plays audio on their device, and everyone connected shares the exact same synchronized music moment. Guests act as remote controllers, suggesting tracks anonymously without interrupting the host's active stream.</p>
+                  </div>
+                  
+                  <div className="glass-card p-5 rounded-xl border border-white/5">
+                    <h3 className="font-extrabold text-white mb-2">Can guests control playback or skip tracks?</h3>
+                    <p className="leading-relaxed">Hosts maintain total administrative control. When setting up a room, hosts can toggle granular guest permissions such as seeking, pausing/playing, skipping songs, default volume levels, or showing/hiding video renders on guest screens.</p>
+                  </div>
+                  
+                  <div className="glass-card p-5 rounded-xl border border-white/5">
+                    <h3 className="font-extrabold text-white mb-2">What is an Unlisted Room?</h3>
+                    <p className="leading-relaxed">When hosting, you can toggle the "Unlisted" option. This keeps the room completely private by hiding it from the public active rooms list and search indexes. To join an unlisted room, guests must enter the 5-digit room code directly.</p>
+                  </div>
+                </div>
               </div>
             </motion.div>
           )}
@@ -1567,7 +1640,7 @@ function App() {
             >
               <div className="text-center mb-8">
                 <h2 className="text-3xl font-extrabold">Host a New Party</h2>
-                <p className="text-spotify-text text-sm mt-2">Set up your local network room instantly</p>
+                <p className="text-spotify-text text-sm mt-2">Set up your synchronized party room instantly</p>
               </div>
 
               <form onSubmit={handleCreateRoom} className="space-y-6">
@@ -1579,7 +1652,7 @@ function App() {
                     id="party-name"
                     type="text"
                     required
-                    placeholder="e.g. Jay's Chill Session"
+                    placeholder="e.g. DJ Party's room"
                     value={partyName}
                     onChange={(e) => setPartyName(e.target.value)}
                     className="w-full px-4 py-3 bg-spotify-light-gray/60 border border-white/5 rounded-xl text-white placeholder-spotify-text focus:outline-hidden focus:border-spotify-green/50 focus:ring-1 focus:ring-spotify-green/20 transition text-sm"
@@ -1594,24 +1667,39 @@ function App() {
                     id="host-name"
                     type="text"
                     required
-                    placeholder="e.g. DJ Host"
+                    placeholder="e.g. DJ Party"
                     value={hostName}
                     onChange={(e) => setHostName(e.target.value)}
                     className="w-full px-4 py-3 bg-spotify-light-gray/60 border border-white/5 rounded-xl text-white placeholder-spotify-text focus:outline-hidden focus:border-spotify-green/50 focus:ring-1 focus:ring-spotify-green/20 transition text-sm"
                   />
                 </div>
 
-                <div className="flex items-center gap-2 py-1">
-                  <input
-                    id="is-private-room"
-                    type="checkbox"
-                    checked={isPrivateRoom}
-                    onChange={(e) => setIsPrivateRoom(e.target.checked)}
-                    className="w-4 h-4 rounded-sm bg-spotify-light-gray/60 border-white/10 text-spotify-green focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                  />
-                  <label htmlFor="is-private-room" className="text-xs font-bold uppercase tracking-wider text-spotify-text cursor-pointer select-none">
-                    Private Room (Password Protected)
-                  </label>
+                <div className="flex flex-col gap-3 py-1">
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="is-private-room"
+                      type="checkbox"
+                      checked={isPrivateRoom}
+                      onChange={(e) => setIsPrivateRoom(e.target.checked)}
+                      className="w-4 h-4 rounded-sm bg-spotify-light-gray/60 border-white/10 text-spotify-green focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                    />
+                    <label htmlFor="is-private-room" className="text-xs font-bold uppercase tracking-wider text-spotify-text cursor-pointer select-none">
+                      Private Room (Password Protected)
+                    </label>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="is-unlisted-room"
+                      type="checkbox"
+                      checked={isUnlistedRoom}
+                      onChange={(e) => setIsUnlistedRoom(e.target.checked)}
+                      className="w-4 h-4 rounded-sm bg-spotify-light-gray/60 border-white/10 text-spotify-green focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                    />
+                    <label htmlFor="is-unlisted-room" className="text-xs font-bold uppercase tracking-wider text-spotify-text cursor-pointer select-none text-left">
+                      Unlisted Room (Hide from discovery list & search)
+                    </label>
+                  </div>
                 </div>
 
                 {isPrivateRoom && (
@@ -1665,7 +1753,7 @@ function App() {
                               onChange={(e) => setAllowGuestSkip(e.target.checked)}
                               className="sr-only peer" 
                             />
-                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                           </label>
                         </div>
 
@@ -1679,7 +1767,7 @@ function App() {
                               onChange={(e) => setAllowGuestSeek(e.target.checked)}
                               className="sr-only peer" 
                             />
-                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                           </label>
                         </div>
 
@@ -1693,7 +1781,7 @@ function App() {
                               onChange={(e) => setAllowGuestPlayPause(e.target.checked)}
                               className="sr-only peer" 
                             />
-                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                           </label>
                         </div>
 
@@ -1707,7 +1795,7 @@ function App() {
                               onChange={(e) => setGuestMuteByDefault(e.target.checked)}
                               className="sr-only peer" 
                             />
-                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                           </label>
                         </div>
 
@@ -1721,7 +1809,7 @@ function App() {
                               onChange={(e) => setDisplayGuestVideo(e.target.checked)}
                               className="sr-only peer" 
                             />
-                            <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                            <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                           </label>
                         </div>
                       </motion.div>
@@ -1805,7 +1893,7 @@ function App() {
                       id="guest-name"
                       type="text"
                       required
-                      placeholder="e.g. DJ Rock"
+                      placeholder="e.g. DJ Party"
                       value={guestName}
                       onChange={(e) => setGuestName(e.target.value)}
                       className="w-full px-4 py-3 bg-spotify-light-gray/60 border border-white/5 rounded-xl text-white placeholder-spotify-text focus:outline-hidden focus:border-spotify-green/50 focus:ring-1 focus:ring-spotify-green/20 transition text-sm"
@@ -1867,6 +1955,10 @@ function App() {
                         
                         <button
                           onClick={() => {
+                            if (qrScanTimeoutRef.current) {
+                              clearTimeout(qrScanTimeoutRef.current);
+                              qrScanTimeoutRef.current = null;
+                            }
                             if (discoveredRooms.length > 0) {
                               setRoomCodeInput(discoveredRooms[0].roomCode);
                             }
@@ -1882,7 +1974,7 @@ function App() {
                       </div>
                       <p className="mt-6 text-sm text-spotify-text">Position QR code inside the frame</p>
                       <button
-                        onClick={() => setIsScanningQR(false)}
+                        onClick={handleCancelQRScan}
                         className="mt-6 px-5 py-2.5 bg-white/5 border border-white/10 rounded-full hover:bg-white/10 text-xs font-bold transition cursor-pointer"
                       >
                         Cancel
@@ -1891,49 +1983,7 @@ function App() {
                   )}
                 </AnimatePresence>
 
-                {/* Inline settings in Join Room */}
-                <div className="mt-6 pt-5 border-t border-white/5 w-full text-center">
-                  <button
-                    type="button"
-                    onClick={() => setShowSettings(!showSettings)}
-                    className="inline-flex items-center gap-2 text-xxs font-bold text-spotify-text hover:text-white transition cursor-pointer"
-                  >
-                    <Settings className="w-3.5 h-3.5 text-spotify-green" />
-                    <span>Connection Settings: <strong className="text-spotify-green">{backendHost}</strong></span>
-                  </button>
 
-                  <AnimatePresence>
-                    {showSettings && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: 'auto' }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="overflow-hidden mt-3"
-                      >
-                        <form onSubmit={handleSaveSettings} className="p-4 bg-white/2 rounded-xl border border-white/5 flex flex-col gap-2 text-left">
-                          <label className="text-xxs font-bold uppercase tracking-wider text-spotify-text flex items-center gap-1.5">
-                            <Settings className="w-3 h-3" /> Server Host IP/Hostname
-                          </label>
-                          <div className="flex gap-2">
-                            <input
-                              type="text"
-                              placeholder="e.g. 192.168.1.103"
-                              value={ipInput}
-                              onChange={(e) => setIpInput(e.target.value)}
-                              className="flex-1 px-3 py-1.5 bg-spotify-light-gray/60 border border-white/5 rounded-lg text-white focus:outline-hidden text-xs"
-                            />
-                            <button
-                              type="submit"
-                              className="px-3 py-1.5 bg-spotify-green text-black font-extrabold rounded-lg text-xs cursor-pointer"
-                            >
-                              Save
-                            </button>
-                          </div>
-                        </form>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
 
                 <button
                   onClick={() => setCurrentView('landing')}
@@ -1943,11 +1993,11 @@ function App() {
                 </button>
               </div>
 
-              {/* Dynamic Nearby discovery list in join room page */}
+              {/* Dynamic discovery list in join room page */}
               {filteredDiscoveredRooms.length > 0 && (
                 <div className="glass-panel p-6 rounded-2xl border border-white/5">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-spotify-text mb-4">
-                    Active Nearby Parties on WiFi
+                    Active Public Listening Parties
                   </h3>
                   <div className="space-y-3">
                     {filteredDiscoveredRooms.map((r) => (
@@ -1974,7 +2024,7 @@ function App() {
             </motion.div>
           )}
 
-          {/* VIEW: NEARBY ROOM DISCOVERY */}
+          {/* VIEW: ROOM DISCOVERY */}
           {currentView === 'discovery' && (
             <motion.div
               key="discovery"
@@ -1986,7 +2036,7 @@ function App() {
               <div className="flex justify-between items-center mb-8">
                 <div>
                   <h2 className="text-3xl font-extrabold font-sans">Discover Parties</h2>
-                  <p className="text-spotify-text text-sm mt-1">Automatic discovery of local network sessions</p>
+                  <p className="text-spotify-text text-sm mt-1">Explore and join active global listening parties</p>
                 </div>
                 <button
                   onClick={() => fetchNearbyRooms()}
@@ -2019,24 +2069,7 @@ function App() {
                 )}
               </div>
 
-              {/* Local Wi-Fi filter toggle */}
-              <div className="flex items-center justify-between p-3.5 bg-white/5 rounded-xl border border-white/5 mb-6 text-xs">
-                <span className="font-semibold text-spotify-text">Only Show Parties on My Wi-Fi Network</span>
-                <button
-                  type="button"
-                  onClick={() => setIsLocalDiscoveryOnly(!isLocalDiscoveryOnly)}
-                  className={`w-10 h-6 rounded-full p-0.5 transition-colors duration-300 focus:outline-hidden cursor-pointer flex items-center ${
-                    isLocalDiscoveryOnly ? 'bg-spotify-green' : 'bg-white/10'
-                  }`}
-                  aria-label="Toggle local network filter"
-                >
-                  <div
-                    className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform duration-300 ${
-                      isLocalDiscoveryOnly ? 'translate-x-4' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
+
 
               {filteredDiscoveredRooms.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center text-spotify-text">
@@ -2045,7 +2078,7 @@ function App() {
                   <p className="text-xs max-w-xs mt-2">
                     {roomSearchQuery 
                       ? "Try searching for a different room name, host, or room code." 
-                      : "Make sure an admin has created a room. Everyone must be connected to the same local WiFi."}
+                      : "Make sure an admin has created a room."}
                   </p>
                 </div>
               ) : (
@@ -2103,7 +2136,7 @@ function App() {
               {!isHostOnline && userRole === 'guest' && (
                 <div className="lg:col-span-12 w-full bg-red-500/20 border border-red-500/30 text-red-200 px-6 py-4 rounded-2xl flex items-center justify-between gap-4 animate-pulse">
                   <div className="flex items-center gap-3">
-                    <Wifi className="w-5 h-5 text-red-400" />
+                    <ShieldAlert className="w-5 h-5 text-red-400" />
                     <div className="text-left">
                       <p className="text-sm font-bold">Host Disconnected</p>
                       <p className="text-xs text-red-300/80 mt-0.5">The host machine has lost connection. Playback is paused. Waiting for them to reconnect...</p>
@@ -2117,7 +2150,9 @@ function App() {
                 {/* Room Info Header */}
                 <div className="w-full flex items-center justify-between mb-8 px-2">
                   <div>
-                    <h2 className="text-2xl font-extrabold leading-tight">{roomName}</h2>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h2 className="text-2xl font-extrabold leading-tight">{roomName}</h2>
+                    </div>
                     <p className="text-xs text-spotify-text mt-1 flex items-center gap-1.5">
                       <span className="inline-block w-2 h-2 rounded-full bg-spotify-green animate-pulse"></span>
                       <span>Connected as <strong className="text-white font-bold">{myUsername}</strong> ({userRole})</span>
@@ -2397,7 +2432,7 @@ function App() {
                                 onChange={(e) => updateSinglePermission('allowGuestSkip', e.target.checked)}
                                 className="sr-only peer" 
                               />
-                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                              <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                             </label>
                           </div>
 
@@ -2411,7 +2446,7 @@ function App() {
                                 onChange={(e) => updateSinglePermission('allowGuestSeek', e.target.checked)}
                                 className="sr-only peer" 
                               />
-                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                              <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                             </label>
                           </div>
 
@@ -2425,7 +2460,7 @@ function App() {
                                 onChange={(e) => updateSinglePermission('allowGuestPlayPause', e.target.checked)}
                                 className="sr-only peer" 
                               />
-                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                              <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                             </label>
                           </div>
 
@@ -2439,7 +2474,7 @@ function App() {
                                 onChange={(e) => updateSinglePermission('displayGuestVideo', e.target.checked)}
                                 className="sr-only peer" 
                               />
-                              <div className="w-9 h-5 bg-white/10 rounded-full peer peer-focus:ring-0 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
+                              <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green"></div>
                             </label>
                           </div>
                         </motion.div>
@@ -2469,16 +2504,6 @@ function App() {
                         <span className={`w-1.5 h-1.5 rounded-full ${u.isHost ? 'bg-spotify-green animate-pulse' : 'bg-emerald-400'} flex-shrink-0`}></span>
                         <span className="truncate max-w-[120px]" title={u.name}>{u.name}</span>
                         {u.isHost && <span className="text-xxs opacity-70">(Host)</span>}
-                        {userRole === 'host' && u.ip && (
-                          <span 
-                            className="text-[9px] opacity-40 font-mono select-all bg-black/30 px-1 rounded ml-0.5" 
-                            title={`IP Address: ${u.ip}`}
-                          >
-                            {u.ip === '::1' || u.ip === '127.0.0.1' || u.ip?.includes('127.0.0.1') 
-                              ? 'localhost' 
-                              : u.ip.replace('::ffff:', '')}
-                          </span>
-                        )}
                         {userRole === 'host' && !u.isHost && (
                           <button
                             type="button"
@@ -2662,7 +2687,7 @@ function App() {
           <span className="text-white/20 mb-3 block">Sponsored Ad</span>
           <div className="flex-grow w-full bg-white/2 rounded-xl border border-white/5 flex flex-col items-center justify-center p-4">
             <span className="text-white/10 font-bold mb-1">Zero Latency</span>
-            <span className="text-white/5 font-semibold text-[10px] normal-case text-center">Host local rooms on your network</span>
+            <span className="text-white/5 font-semibold text-[10px] normal-case text-center">Host collaborative music rooms globally</span>
           </div>
         </div>
       </div>
@@ -2673,13 +2698,60 @@ function App() {
         <div className="w-full bg-spotify-green/95 text-black py-2.5 px-6 font-semibold text-center text-xs flex justify-center items-center gap-3 z-20 cursor-pointer hover:bg-spotify-green transition-all"
              onClick={() => setCurrentView('discovery')}>
           <Compass className="w-4 h-4 animate-spin" style={{ animationDuration: '8s' }} />
-          <span>{discoveredRooms.length} active party room{discoveredRooms.length > 1 ? 's' : ''} detected on your WiFi network! Tap to discover.</span>
+          <span>{discoveredRooms.length} active party room{discoveredRooms.length > 1 ? 's' : ''} detected! Tap to discover.</span>
         </div>
       )}
 
-      {/* Footer */}
-      <footer className="w-full border-t border-white/5 bg-spotify-black/20 py-4 text-center text-xxs text-spotify-text font-bold uppercase tracking-wider z-10">
-        LocalParty © {new Date().getFullYear()} • Created by junior developers of EmergingCoders
+      {/* Redesigned Larger than Life Modern Footer */}
+      <footer className="w-full border-t border-white/5 bg-spotify-black/80 backdrop-blur-xl pt-16 pb-12 z-10 mt-auto">
+        <div className="max-w-6xl mx-auto px-6 grid grid-cols-1 md:grid-cols-12 gap-10 mb-12">
+          {/* Brand Identity Column */}
+          <div className="md:col-span-6 flex flex-col items-start text-left">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="w-2.5 h-2.5 rounded-full bg-spotify-green animate-pulse shadow-[0_0_10px_#1db954]"></span>
+              <span className="text-xl font-black tracking-widest text-white uppercase font-sans">LocalParty</span>
+            </div>
+            <p className="text-spotify-text text-sm max-w-sm leading-relaxed mb-6 font-medium">
+              The ultimate collaborative social music queue system. Stream synchronized audio in absolute real-time while keeping the upcoming surprise playlist beautifully hidden from your guests.
+            </p>
+          </div>
+
+          {/* Column 2: Features */}
+          <div className="md:col-span-3 flex flex-col items-start text-left">
+            <h4 className="text-xs font-bold uppercase tracking-widest text-white mb-4">Features</h4>
+            <ul className="space-y-2.5 text-xs font-semibold text-spotify-text">
+              <li className="hover:text-white transition cursor-default">Surprise Playlist Queue</li>
+              <li className="hover:text-white transition cursor-default">Anonymous Track Suggestions</li>
+              <li className="hover:text-white transition cursor-default">Granular Administrative Controls</li>
+              <li className="hover:text-white transition cursor-default">Private Unlisted Room Security</li>
+            </ul>
+          </div>
+
+          {/* Column 3: Explore */}
+          <div className="md:col-span-3 flex flex-col items-start text-left">
+            <h4 className="text-xs font-bold uppercase tracking-widest text-white mb-4">Explore</h4>
+            <ul className="space-y-2.5 text-xs font-semibold text-spotify-text">
+              <li><button onClick={() => setCurrentView('landing')} className="hover:text-spotify-green hover:underline cursor-pointer transition text-left">Host Party</button></li>
+              <li><button onClick={() => setCurrentView('join-room')} className="hover:text-spotify-green hover:underline cursor-pointer transition text-left">Join Session</button></li>
+              <li><button onClick={() => setCurrentView('discovery')} className="hover:text-spotify-green hover:underline cursor-pointer transition text-left">Public Discovery</button></li>
+              <li><a href="#specs" onClick={() => { setCurrentView('landing'); setTimeout(() => document.getElementById('specs')?.scrollIntoView({ behavior: 'smooth' }), 105); }} className="hover:text-spotify-green hover:underline cursor-pointer transition text-left">Technical Specs</a></li>
+              <li><button onClick={() => setIsFeedbackOpen(true)} className="text-spotify-green font-extrabold hover:text-spotify-green hover:underline cursor-pointer transition text-left">Give Feedback</button></li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Separator & Bottom Row */}
+        <div className="max-w-6xl mx-auto px-6 border-t border-white/5 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xxs tracking-widest text-spotify-text/60 font-semibold uppercase">
+          <div>
+            <span>LocalParty &copy; {new Date().getFullYear()} • All rights reserved.</span>
+          </div>
+          <div className="flex items-center gap-1.5 hover:text-white transition-colors duration-300">
+            <span>Developed by</span>
+            <span className="text-white font-extrabold tracking-wide hover:text-spotify-green transition-colors duration-300 cursor-pointer">
+              Developers of Emerging Coders
+            </span>
+          </div>
+        </div>
       </footer>
 
       {/* MODALS */}
@@ -2694,7 +2766,7 @@ function App() {
         isOpen={isQrOpen}
         onClose={() => setIsQrOpen(false)}
         roomCode={roomCode}
-        localIp={hostLocalIp}
+        localIp={hostLocalIp || clientSystemIp}
       />
 
       <ConfirmationModal
@@ -2724,6 +2796,12 @@ function App() {
         isOpen={isInactivityWarningOpen}
         countdown={inactivityCountdown}
         onContinue={handleContinueRoomActivity}
+      />
+
+      <FeedbackModal
+        isOpen={isFeedbackOpen}
+        onClose={() => setIsFeedbackOpen(false)}
+        backendHost={backendHost}
       />
 
     </div>

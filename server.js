@@ -4,6 +4,10 @@ import { Server } from "socket.io";
 import cors from "cors";
 import os from "os";
 import yts from "yt-search";
+import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 // Global exception and rejection handlers to prevent server crashes
 process.on("uncaughtException", (err) => {
@@ -524,13 +528,44 @@ function getClientIp(socket) {
 
 const LOCAL_IP = getLocalIpAddress();
 
+function isPrivateIp(ip) {
+  if (!ip) return false;
+  const norm = ip.replace(/^::ffff:/, "").trim();
+  return (
+    norm.startsWith("192.") ||
+    norm.startsWith("10.") ||
+    norm.startsWith("127.") ||
+    norm === "::1" ||
+    norm.startsWith("172.")
+  );
+}
+
+function isSameLocalNetwork(ip1, ip2) {
+  if (!ip1 || !ip2) return false;
+
+  const norm1 = ip1.replace(/^::ffff:/, "").trim();
+  const norm2 = ip2.replace(/^::ffff:/, "").trim();
+
+  if (norm1 === norm2) return true;
+
+  const isLoopback1 = norm1 === "127.0.0.1" || norm1 === "::1";
+  const isLoopback2 = norm2 === "127.0.0.1" || norm2 === "::1";
+  if (isLoopback1 && isLoopback2) return true;
+
+  if (isPrivateIp(norm1) && isPrivateIp(norm2)) {
+    return true; // Any two private/local IPs are on the same local network
+  }
+
+  return false;
+}
+
 // Expose discovery API
 app.get("/api/rooms", rateLimiter, (req, res) => {
   const isLocalOnly = req.query.local === "true";
   const clientIp =
     req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
 
-  let roomList = Array.from(rooms.values());
+  let roomList = Array.from(rooms.values()).filter((room) => !room.isUnlisted);
 
   if (isLocalOnly) {
     roomList = roomList.filter((room) => {
@@ -539,48 +574,204 @@ app.get("/api/rooms", rateLimiter, (req, res) => {
       const hostIp = hostUser ? hostUser.ip : null;
 
       if (!hostIp) return false;
-
-      // If client is loopback, match loopback IPs
-      const isClientLoopback =
-        clientIp === "::1" ||
-        clientIp === "127.0.0.1" ||
-        clientIp.includes("::ffff:127.0.0.1");
-      const isHostLoopback =
-        hostIp === "::1" ||
-        hostIp === "127.0.0.1" ||
-        hostIp.includes("::ffff:127.0.0.1");
-      if (isClientLoopback && isHostLoopback) {
-        return true;
-      }
-
-      // Otherwise, match exact external IPs (which are identical for users sharing NAT/Wi-Fi router)
-      const normClientIp = clientIp.replace(/^::ffff:/, "");
-      const normHostIp = hostIp.replace(/^::ffff:/, "");
-      return normClientIp === normHostIp;
+      return isSameLocalNetwork(clientIp, hostIp);
     });
   }
 
-  const activeRooms = roomList.map((room) => ({
-    roomCode: room.roomCode,
-    roomName: room.roomName,
-    hostName: room.hostName,
-    userCount: room.users.length,
-    isPrivate: !!room.password,
-    currentSong: room.currentSong
-      ? {
-          title: room.currentSong.title,
-          artist: room.currentSong.artist,
-          albumArt: room.currentSong.albumArt,
-          isPlaying: room.currentSong.isPlaying,
-        }
-      : null,
-  }));
+  const activeRooms = roomList.map((room) => {
+    const hostUser = room.users.find((u) => u.isHost);
+    const hostIp = hostUser ? hostUser.ip : null;
+    const isLocal = hostIp ? isSameLocalNetwork(clientIp, hostIp) : false;
+
+    return {
+      roomCode: room.roomCode,
+      roomName: room.roomName,
+      hostName: room.hostName,
+      userCount: room.users.length,
+      isPrivate: !!room.password,
+      isLocal,
+      currentSong: room.currentSong
+        ? {
+            title: room.currentSong.title,
+            artist: room.currentSong.artist,
+            albumArt: room.currentSong.albumArt,
+            isPlaying: room.currentSong.isPlaying,
+          }
+        : null,
+    };
+  });
   res.json(activeRooms);
 });
 
 // Expose local network info API
 app.get("/api/network", (req, res) => {
   res.json({ ip: LOCAL_IP });
+});
+
+// Mail Transporter Configuration
+const transporter = nodemailer.createTransport({
+  host: process.env.MAIL_HOST || "smtp.gmail.com",
+  port: parseInt(process.env.MAIL_PORT || "465", 10),
+  secure: process.env.MAIL_ENCRYPTION === "ssl", // true for 465, false for other ports
+  auth: {
+    user: process.env.MAIL_USERNAME,
+    pass: process.env.MAIL_PASSWORD,
+  },
+});
+
+// Feedback Endpoint
+app.post("/api/feedback", rateLimiter, async (req, res) => {
+  const { name, email, subject, message } = req.body;
+
+  if (!subject || !message) {
+    return res.status(400).json({ success: false, message: "Subject and message are required." });
+  }
+
+  const senderName = name?.trim() || "Anonymous Guest";
+  const senderEmail = email?.trim() || "Not Provided";
+  const timestamp = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+
+  const mailHTML = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: #090909;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+          }
+          .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #121212;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+          }
+          .header {
+            background-color: #1a1a1a;
+            padding: 30px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            text-align: center;
+          }
+          .logo {
+            color: #1db954;
+            font-size: 24px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 5px;
+          }
+          .subtitle {
+            color: #b3b3b3;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+          }
+          .body {
+            padding: 40px 30px;
+          }
+          .field-group {
+            margin-bottom: 25px;
+          }
+          .label {
+            color: #b3b3b3;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 6px;
+          }
+          .value {
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 600;
+          }
+          .message-box {
+            background-color: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+            color: #e5e5e5;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+          }
+          .footer {
+            background-color: #0b0b0b;
+            padding: 20px 30px;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            text-align: center;
+            font-size: 10px;
+            color: #7a7a7a;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo">LocalParty</div>
+            <div class="subtitle">New User Feedback Received</div>
+          </div>
+          <div class="body">
+            <div class="field-group" style="display: flex; gap: 20px; flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 150px;">
+                <div class="label">Sender Name</div>
+                <div class="value">${senderName}</div>
+              </div>
+              <div style="flex: 1; min-width: 150px;">
+                <div class="label">Sender Email</div>
+                <div class="value" style="color: #1db954;">${senderEmail}</div>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <div class="label">Subject</div>
+              <div class="value" style="font-size: 16px; color: #ffffff; font-weight: 800;">${subject}</div>
+            </div>
+
+            <div class="field-group">
+              <div class="label">Feedback Message</div>
+              <div class="message-box">${message}</div>
+            </div>
+            
+            <div style="margin-top: 30px; font-size: 11px; color: #7a7a7a; font-weight: 500;">
+              Submitted at ${timestamp} (Asia/Kolkata timezone)
+            </div>
+          </div>
+          <div class="footer">
+            LocalParty &copy; ${new Date().getFullYear()} &bull; Developed by Developers of Emerging Coders
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  const recipients = ["emergingcoders12@gmail.com", "hatim886644@gmail.com"];
+
+  try {
+    await transporter.sendMail({
+      from: `"${process.env.MAIL_FROM_NAME || "LocalParty"}" <${process.env.MAIL_FROM_ADDRESS || process.env.MAIL_USERNAME}>`,
+      to: recipients.join(", "),
+      subject: `[LocalParty Feedback] ${subject}`,
+      html: mailHTML,
+    });
+
+    console.log(`Feedback mail successfully sent to ${recipients.join(", ")}`);
+    res.json({ success: true, message: "Feedback sent successfully!" });
+  } catch (error) {
+    console.error("Error sending feedback email:", error);
+    res.status(500).json({ success: false, message: "Failed to send feedback email. Server error." });
+  }
 });
 
 // YouTube Search Cache
@@ -759,7 +950,7 @@ io.on("connection", (socket) => {
   // Create Room
   socket.on(
     "room:create",
-    ({ roomName, hostName, password, permissions }, callback) => {
+    ({ roomName, hostName, password, systemIp, permissions, isUnlisted }, callback) => {
       // Generate simple 5-digit room code
       let roomCode;
       do {
@@ -784,7 +975,7 @@ io.on("connection", (socket) => {
             socketId: socket.id,
             name: hostName,
             isHost: true,
-            ip: getClientIp(socket),
+            ip: systemIp || getClientIp(socket),
           },
         ],
         currentSong: null,
@@ -793,6 +984,7 @@ io.on("connection", (socket) => {
         playedHistory: [],
         auditLog: [],
         password: password || null,
+        isUnlisted: !!isUnlisted,
         lastActivityTime: Date.now(),
         permissions: {
           ...defaultPermissions,
@@ -814,7 +1006,7 @@ io.on("connection", (socket) => {
   );
 
   // Join Room
-  socket.on("room:join", ({ roomCode, name, password }, callback) => {
+  socket.on("room:join", ({ roomCode, name, password, systemIp }, callback) => {
     const code = roomCode?.toUpperCase();
     const room = rooms.get(code);
 
@@ -858,7 +1050,7 @@ io.on("connection", (socket) => {
       socketId: socket.id,
       name: finalName,
       isHost: false,
-      ip: getClientIp(socket),
+      ip: systemIp || getClientIp(socket),
     };
     room.users.push(newUser);
     userRoomCode = code;
@@ -894,7 +1086,7 @@ io.on("connection", (socket) => {
   // Reconnect to active session
   socket.on(
     "room:reconnect",
-    ({ roomCode, role, username, password }, callback) => {
+    ({ roomCode, role, username, password, systemIp }, callback) => {
       const code = roomCode?.toUpperCase();
       const room = rooms.get(code);
 
@@ -948,12 +1140,13 @@ io.on("connection", (socket) => {
         const hostUser = room.users.find((u) => u.isHost);
         if (hostUser) {
           hostUser.socketId = socket.id;
+          if (systemIp) hostUser.ip = systemIp;
         } else {
           room.users.push({
             socketId: socket.id,
             name: username,
             isHost: true,
-            ip: getClientIp(socket),
+            ip: systemIp || getClientIp(socket),
           });
         }
 
@@ -964,6 +1157,7 @@ io.on("connection", (socket) => {
         const guestUser = room.users.find((u) => u.name === username);
         if (guestUser) {
           guestUser.socketId = socket.id;
+          if (systemIp) guestUser.ip = systemIp;
           logRoomEvent(room, `Guest ${username} reconnected.`);
         } else {
           // Guest wasn't in the room before, they cannot bypass normal join
@@ -1395,56 +1589,128 @@ io.on("connection", (socket) => {
     clearRoomTimers(userRoomCode);
 
     io.to(userRoomCode).emit("room:ended");
+    
+    // Force leave all sockets in the room channel
+    const socketsInRoom = io.sockets.adapter.rooms.get(userRoomCode);
+    if (socketsInRoom) {
+      for (const socketId of socketsInRoom) {
+        const s = io.sockets.sockets.get(socketId);
+        if (s) {
+          s.leave(userRoomCode);
+        }
+      }
+    }
+    
     rooms.delete(userRoomCode);
   });
 
   // User leaves room manually
   socket.on("room:leave", () => {
-    handleLeave();
+    handleLeave(true);
   });
 
   // Connection lost
   socket.on("disconnect", () => {
-    handleLeave();
+    handleLeave(false);
   });
 
-  function handleLeave() {
+  function handleLeave(isManual = false) {
     if (!userRoomCode) return;
     const room = rooms.get(userRoomCode);
     if (!room) return;
 
-    if (room.hostSocketId === socket.id) {
-      // Host disconnected: start grace period
-      logRoomEvent(room, "Host disconnected. Starting 15s grace period.");
+    const isHost = room.hostSocketId === socket.id;
 
-      // Notify guests that host is temporarily offline
-      io.to(userRoomCode).emit("room:host-status", { connected: false });
-
-      // Clear any existing timer
-      if (roomDisconnectTimers.has(userRoomCode)) {
-        clearTimeout(roomDisconnectTimers.get(userRoomCode));
-      }
-
-      const timer = setTimeout(() => {
-        console.log(`Grace period expired. Closing room: ${userRoomCode}`);
+    if (isManual) {
+      if (isHost) {
+        // Host leaving manually: close room immediately
+        console.log(`Host left manually. Closing room: ${userRoomCode}`);
         io.to(userRoomCode).emit("room:ended");
+
+        // Force leave all sockets in the room channel
+        const socketsInRoom = io.sockets.adapter.rooms.get(userRoomCode);
+        if (socketsInRoom) {
+          for (const socketId of socketsInRoom) {
+            const s = io.sockets.sockets.get(socketId);
+            if (s) {
+              s.leave(userRoomCode);
+            }
+          }
+        }
 
         clearRoomTimers(userRoomCode);
         rooms.delete(userRoomCode);
-      }, 15000); // 15 seconds
-
-      roomDisconnectTimers.set(userRoomCode, timer);
+      } else {
+        // Guest leaving manually: remove immediately
+        const leavingUser = room.users.find((u) => u && u.socketId === socket.id);
+        const disconnectedName = leavingUser ? leavingUser.name : "Unknown Guest";
+        room.users = room.users.filter((u) => u && u.socketId !== socket.id);
+        logRoomEvent(room, `Guest left manually: "${disconnectedName}"`);
+        io.to(userRoomCode).emit("room:user-update", room.users);
+        resetRoomActivity(userRoomCode);
+      }
+      userRoomCode = null;
     } else {
-      // Guest disconnected: remove user
-      const leavingUser = room.users.find((u) => u && u.socketId === socket.id);
-      const disconnectedName = leavingUser ? leavingUser.name : "Unknown Guest";
-      room.users = room.users.filter((u) => u && u.socketId !== socket.id);
-      logRoomEvent(room, `Guest left room: "${disconnectedName}"`);
-      io.to(userRoomCode).emit("room:user-update", room.users);
-      resetRoomActivity(userRoomCode);
-    }
+      // Socket disconnected (connection lost / page refresh)
+      if (isHost) {
+        // Host disconnected: start grace period
+        logRoomEvent(room, "Host disconnected. Starting 15s grace period.");
 
-    userRoomCode = null;
+        // Notify guests that host is temporarily offline
+        io.to(userRoomCode).emit("room:host-status", { connected: false });
+
+        // Clear any existing timer
+        if (roomDisconnectTimers.has(userRoomCode)) {
+          clearTimeout(roomDisconnectTimers.get(userRoomCode));
+        }
+
+        const timer = setTimeout(() => {
+          console.log(`Grace period expired. Closing room: ${userRoomCode}`);
+          io.to(userRoomCode).emit("room:ended");
+
+          // Force leave all sockets in the room channel
+          const socketsInRoom = io.sockets.adapter.rooms.get(userRoomCode);
+          if (socketsInRoom) {
+            for (const socketId of socketsInRoom) {
+              const s = io.sockets.sockets.get(socketId);
+              if (s) {
+                s.leave(userRoomCode);
+              }
+            }
+          }
+
+          clearRoomTimers(userRoomCode);
+          rooms.delete(userRoomCode);
+        }, 15000); // 15 seconds
+
+        roomDisconnectTimers.set(userRoomCode, timer);
+      } else {
+        // Guest disconnected: start 10s grace period
+        const disconnectedSocketId = socket.id;
+        const currentRoomCode = userRoomCode;
+        const leavingUser = room.users.find((u) => u && u.socketId === disconnectedSocketId);
+        const disconnectedName = leavingUser ? leavingUser.name : "Unknown Guest";
+        logRoomEvent(room, `Guest disconnected: "${disconnectedName}". Starting 10s grace period.`);
+
+        setTimeout(() => {
+          const activeRoom = rooms.get(currentRoomCode);
+          if (!activeRoom) return;
+
+          const guestIndex = activeRoom.users.findIndex(
+            (u) => u && u.socketId === disconnectedSocketId
+          );
+
+          if (guestIndex !== -1) {
+            // Guest never re-bound their socket during grace period, remove them now
+            activeRoom.users = activeRoom.users.filter((u) => u && u.socketId !== disconnectedSocketId);
+            logRoomEvent(activeRoom, `Guest "${disconnectedName}" grace period expired. Removed from room.`);
+            io.to(currentRoomCode).emit("room:user-update", activeRoom.users);
+            resetRoomActivity(currentRoomCode);
+          }
+        }, 10000); // 10 seconds grace period
+      }
+      userRoomCode = null;
+    }
   }
 });
 

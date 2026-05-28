@@ -14,10 +14,34 @@ export const RoomQRModal: React.FC<RoomQRModalProps> = ({ isOpen, onClose, roomC
   const [copied, setCopied] = useState(false);
 
   // Dynamically compute the join link
-  const host = localIp || window.location.hostname;
-  // If we are on port 5173 (dev), guests should hit 5173. Let's resolve the port properly.
-  const port = window.location.port ? `:${window.location.port}` : '';
-  const joinUrl = `${window.location.protocol}//${host}${port}/?room=${roomCode}`;
+  const getJoinUrl = () => {
+    // If we are on Vercel production, strictly enforce the production domain
+    if (window.location.hostname.includes('vercel.app')) {
+      return `https://localparty.vercel.app/?room=${roomCode}`;
+    }
+    
+    // Otherwise, check if current origin is localhost/127.0.0.1 and we have a valid LAN IP
+    const isLanIp = (ip: string) => {
+      if (!ip) return false;
+      const clean = ip.replace(/^https?:\/\//, '').split(':')[0];
+      return clean.startsWith('192.168.') || 
+             clean.startsWith('192.138.') || 
+             clean.startsWith('10.') || 
+             clean.startsWith('172.') ||
+             clean.endsWith('.local');
+    };
+
+    const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (isLocalHost && isLanIp(localIp)) {
+      const port = window.location.port ? `:${window.location.port}` : '';
+      return `${window.location.protocol}//${localIp}${port}/?room=${roomCode}`;
+    }
+
+    // Default fallback to the exact browser origin
+    return `${window.location.origin}/?room=${roomCode}`;
+  };
+
+  const joinUrl = getJoinUrl();
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -123,7 +147,7 @@ export const RoomQRModal: React.FC<RoomQRModalProps> = ({ isOpen, onClose, roomC
         </div>
 
         <p className="text-xxs text-center text-spotify-text leading-relaxed">
-          Tell guests to connect to the same WiFi network and scan this code or open the link to join the surprise party queue!
+          Tell guests to scan this code or open the link to join the surprise party queue!
         </p>
       </div>
     </dialog>
