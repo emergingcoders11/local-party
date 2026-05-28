@@ -617,6 +617,9 @@ const transporter = nodemailer.createTransport({
     user: process.env.MAIL_USERNAME,
     pass: process.env.MAIL_PASSWORD,
   },
+  connectionTimeout: 8000, // 8 seconds timeout to prevent hanging on blocked cloud networks
+  greetingTimeout: 8000,
+  socketTimeout: 8000,
 });
 
 // Feedback Endpoint
@@ -770,7 +773,16 @@ app.post("/api/feedback", rateLimiter, async (req, res) => {
     res.json({ success: true, message: "Feedback sent successfully!" });
   } catch (error) {
     console.error("Error sending feedback email:", error);
-    res.status(500).json({ success: false, message: "Failed to send feedback email. Server error." });
+    // Explicitly identify firewall drops/timeouts on SMTP ports (standard on Render Free Tier)
+    const isTimeout = error.code === 'ETIMEDOUT' || error.message?.includes('timeout') || error.message?.includes('connect') || error.code === 'ECONNRESET';
+    if (isTimeout && (process.env.RENDER || error.address?.includes('smtp'))) {
+      res.status(500).json({ 
+        success: false, 
+        message: "SMTP Connection Timed Out. Render Free Tier blocks outbound SMTP traffic on ports 25, 465, and 587. Please upgrade your Render instance or run the server locally." 
+      });
+    } else {
+      res.status(500).json({ success: false, message: `Failed to send feedback email: ${error.message || 'Server error'}` });
+    }
   }
 });
 

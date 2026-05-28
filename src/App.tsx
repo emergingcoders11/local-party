@@ -2735,7 +2735,7 @@ function App() {
               <li><button onClick={() => setCurrentView('join-room')} className="hover:text-spotify-green hover:underline cursor-pointer transition text-left">Join Session</button></li>
               <li><button onClick={() => setCurrentView('discovery')} className="hover:text-spotify-green hover:underline cursor-pointer transition text-left">Public Discovery</button></li>
               <li><a href="#specs" onClick={() => { setCurrentView('landing'); setTimeout(() => document.getElementById('specs')?.scrollIntoView({ behavior: 'smooth' }), 105); }} className="hover:text-spotify-green hover:underline cursor-pointer transition text-left">Technical Specs</a></li>
-              <li><button onClick={() => setIsFeedbackOpen(true)} className="text-spotify-green font-extrabold hover:text-spotify-green hover:underline cursor-pointer transition text-left">Give Feedback</button></li>
+              {/* <li><button onClick={() => setIsFeedbackOpen(true)} className="text-spotify-green font-extrabold hover:text-spotify-green hover:underline cursor-pointer transition text-left">Give Feedback</button></li> */}
             </ul>
           </div>
         </div>
