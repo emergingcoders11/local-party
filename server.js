@@ -183,268 +183,638 @@ function logRoomEvent(room, message) {
   console.log(`[Room ${room.roomCode} LOG] ${message}`);
 }
 
-const FALLBACK_SONGS = [
-  {
-    id: "s1",
-    title: "Helix Echoes",
-    artist: "SoundHelix Band",
-    album: "Electronic Odyssey",
-    duration: 372,
-    albumArt:
-      "https://images.unsplash.com/photo-1614613535308-eb5fbd3d2c17?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-  },
-  {
-    id: "s2",
-    title: "Neon Skyline",
-    artist: "SoundHelix Band",
-    album: "Retro Waves",
-    duration: 425,
-    albumArt:
-      "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-  },
-  {
-    id: "s3",
-    title: "Sunset Groove",
-    artist: "SoundHelix Band",
-    album: "Chill Lounge",
-    duration: 344,
-    albumArt:
-      "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
-  },
-  {
-    id: "s4",
-    title: "Synthwave Dreams",
-    artist: "SoundHelix Band",
-    album: "Futuristic Horizon",
-    duration: 302,
-    albumArt:
-      "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3",
-  },
-  {
-    id: "s5",
-    title: "Midnight City",
-    artist: "SoundHelix Band",
-    album: "Vapor Trails",
-    duration: 363,
-    albumArt:
-      "https://images.unsplash.com/photo-1498038432885-c6f3f1b912ee?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
-  },
-  {
-    id: "s6",
-    title: "Summer Jam",
-    artist: "SoundHelix Band",
-    album: "Beach Vibin",
-    duration: 312,
-    albumArt:
-      "https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3",
-  },
-  {
-    id: "s7",
-    title: "Deep Bass Quest",
-    artist: "SoundHelix Band",
-    album: "Sub Woofer",
-    duration: 382,
-    albumArt:
-      "https://images.unsplash.com/photo-1516280440614-37939bbacd6a?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3",
-  },
-  {
-    id: "s8",
-    title: "Cosmic Voyage",
-    artist: "SoundHelix Band",
-    album: "Galaxy Travel",
-    duration: 334,
-    albumArt:
-      "https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=300&q=80",
-    url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3",
-  },
+// ============================================================================
+// SMART MUSIC RECOMMENDATION ENGINE
+// Spotify/YouTube Music-style autoplay optimized for Bollywood & Punjabi music
+// ============================================================================
+
+// --- Title Normalization ---
+// Aggressively strips junk keywords from YouTube titles to extract the pure song name.
+const JUNK_KEYWORDS = [
+  'official', 'video', 'audio', 'full', 'song', 'music', 'hd', '4k', '1080p', '720p',
+  'lyric', 'lyrics', 'lyrical', 'remix', 'remixed', 'dj', 'slowed', 'reverb', 'lofi',
+  'teaser', 'trailer', 'promo', 'preview', 'shorts', 'short', 'clip', 'clips',
+  'status', 'whatsapp', 'fan', 'made', 'edit', 'fanmade', 'fanedit',
+  'reaction', 'react', 'review', 'cover', 'unplugged', 'acoustic', 'karaoke',
+  'instrumental', 'bass', 'boosted', 'bassboosted', 'extended', 'mashup', 'mash',
+  'ringtone', 'bgm', 'ost', 'soundtrack', 'repost', 'reupload', 'upload',
+  'new', 'latest', 'best', 'top', 'hit', 'super', 'mega',
+  'feat', 'ft', 'featuring', 'presents', 'records', 'production', 'productions',
+  'motion', 'picture', 'pictures', 'films', 'film', 'movie',
+  'exclusive', 'premiere', 'released', 'out', 'now',
+  'punjabi', 'hindi', 'bollywood', 'latest',
+  'live', 'performance', 'concert', 'stage', 'show',
+  'remastered', 'version', 'original', 'special', 'deluxe',
+];
+const JUNK_REGEX = new RegExp(`\\b(${JUNK_KEYWORDS.join('|')})\\b`, 'gi');
+
+function normalizeTitle(title) {
+  if (!title) return '';
+  let norm = title.toLowerCase();
+  // Remove content inside parentheses, brackets, pipes
+  norm = norm.replace(/\([^)]*\)/g, ' ');
+  norm = norm.replace(/\[[^\]]*\]/g, ' ');
+  norm = norm.replace(/\{[^}]*\}/g, ' ');
+  // Remove everything after a pipe character
+  norm = norm.replace(/\|.*$/, ' ');
+  // Remove junk keywords
+  norm = norm.replace(JUNK_REGEX, ' ');
+  // Remove special characters except spaces and alphanumeric
+  norm = norm.replace(/[^a-z0-9\s]/g, ' ');
+  // Remove "x" used as "feat" separator (e.g. "Singer1 x Singer2")
+  norm = norm.replace(/\bx\b/g, ' ');
+  // Collapse whitespace
+  norm = norm.replace(/\s+/g, ' ').trim();
+  return norm;
+}
+
+// --- Singer Name Extraction ---
+// YouTube titles often follow patterns like "Song Name - Artist Name" or "Song Name | Artist Name"
+// The channel `author.name` is often a label like "T-Series" — not the actual singer.
+// This function tries to extract the actual singer name from the title.
+function extractSingerFromTitle(rawTitle) {
+  if (!rawTitle) return '';
+  // Common separators: " - ", " | ", " – ", " — ", " : "
+  const separators = [' - ', ' – ', ' — ', ' | ', ' : '];
+  for (const sep of separators) {
+    const idx = rawTitle.indexOf(sep);
+    if (idx !== -1) {
+      const afterSep = rawTitle.substring(idx + sep.length).trim();
+      // Clean the singer part — remove junk like "(Official Video)"
+      let singer = afterSep
+        .replace(/\([^)]*\)/g, '')
+        .replace(/\[[^\]]*\]/g, '')
+        .replace(/official|video|audio|lyric|lyrics|ft\.?|feat\.?|music/gi, '')
+        .replace(/[^a-zA-Z\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      // If the extracted part is reasonable (2-40 chars), use it
+      if (singer.length >= 2 && singer.length <= 40) {
+        return singer.toLowerCase();
+      }
+    }
+  }
+  return '';
+}
+
+// --- Bad Video Type Detection ---
+// Returns true if the video title/channel indicates it's NOT a proper music track.
+function isBadVideoType(title, channelName) {
+  const lower = (title || '').toLowerCase();
+  const channel = (channelName || '').toLowerCase();
+  const badPatterns = [
+    /\bteaser\b/, /\btrailer\b/, /\bpromo\b/, /\bpreview\b/,
+    /\breaction\b/, /\breact\b/, /\breview\b/, /\bunboxing\b/,
+    /\bshorts?\b/, /\bclips?\b/, /\bstatus\b/, /\bwhatsapp\b/,
+    /\bringtone\b/, /\bbgm\b/, /\bkaraoke\b/, /\binstrumental\b/,
+    /\bfan\s*made\b/, /\bfan\s*edit\b/, /\bfan\s*version\b/,
+    /\bbehind\s*the\s*scenes?\b/, /\bmaking\s*of\b/,
+    /\bparody\b/, /\bcomedy\b/, /\bfunny\b/, /\broast\b/,
+    /\bmashup\b/, /\bmash\s*up\b/,
+    /\bbass\s*boosted\b/, /\bbass\s*boost\b/,
+    /\b8\s*d\s*audio\b/, /\b16\s*d\b/,
+    /\bslowed\b.*\breverb\b/, /\breverb\b.*\bslowed\b/,
+    /\bslowed\b/, /\breverb\b/, /\blofi\b/, /\blo\s*fi\b/,
+    /\bsped\s*up\b/, /\bspeed\s*up\b/, /\bnightcore\b/,
+    /\bdj\s*remix\b/, /\bdj\s*mix\b/,
+    /\bremix\b/, /\bremixed\b/, /\brefix\b/,
+    /\bcover\b/, /\bacoustic\b/, /\bunplugged\b/,
+    /\blive\s*performance\b/, /\bconcert\b/, /\bstage\s*show\b/,
+    /\blyric(s|al)?\b/,
+    // Beat/instrumental tracks
+    /\btype\s*beat\b/, /\bbeat\s*only\b/, /\bno\s*vocal\b/,
+    // Compilation/blockbuster multi-song videos
+    /\bjukebox\b/, /\bnon\s*stop\b/, /\bjukebox\b/, /\btop\s*\d+\b/,
+    /\bcollection\b/, /\bcompilation\b/,
+  ];
+  if (badPatterns.some(pattern => pattern.test(lower))) return true;
+
+  // Block regional language sub-channels
+  const regionalChannelPatterns = [
+    /telugu/, /tamil/, /kannada/, /malayalam/, /bengali/, /odia/, /marathi/,
+  ];
+  if (regionalChannelPatterns.some(p => p.test(channel))) return true;
+
+  return false;
+}
+
+// --- Language / Region Filter ---
+// Returns true if a video appears to be from a non Hindi/Punjabi language.
+function isWrongLanguage(title, channelName) {
+  const lower = (title || '').toLowerCase();
+  const channel = (channelName || '').toLowerCase();
+
+  // Block strong regional-language keywords found in titles
+  const regionalTitleKeywords = [
+    /\btelugu\b/, /\btamil\b/, /\bkannada\b/, /\bmalayalam\b/,
+    /\bodia\b/, /\bbhojpuri\b/, /\bmarathi\b/, /\bgujarati\b/,
+    /\bsarrainodu\b/, /\ballu\s*arjun\b/, /\bprabhas\b/, /\bmahesh\b/,
+    /\bntr\b/, /\bramcharan\b/, /\byash\b/, /\bdhanush\b/,
+    /\bvijay\b/, /\bajith\b/, /\bsimbu\b/, /\bkollywood\b/,
+    /\btollywood\b/, /\bsandalwood\b/, /\bmollywood\b/,
+  ];
+  if (regionalTitleKeywords.some(p => p.test(lower))) return true;
+
+  // Block regional channels
+  const regionalChannels = [
+    /t-series\s*telugu/, /t-series\s*tamil/, /t-series\s*kannada/,
+    /t-series\s*regional/, /t-series\s*marathi/, /t-series\s*gujarati/,
+    /aditya\s*music/, /lahari\s*music/, /sony\s*music\s*south/,
+    /sun\s*tv/, /star\s*vijay/, /zee\s*telugu/, /zee\s*tamil/,
+    /aha\s*video/, /aha\s*music/,
+  ];
+  if (regionalChannels.some(p => p.test(channel))) return true;
+
+  return false;
+}
+
+// --- Semantic Duplicate Detection ---
+// Returns true if two normalized titles refer to the same song.
+// Uses word overlap to catch "Blue Eyes" vs "Blue Eyes Official Video HD" etc.
+function isDuplicateSong(normalizedCurrent, normalizedCandidate, currentSingerWords) {
+  if (!normalizedCurrent || !normalizedCandidate) return false;
+
+  const currentWords = normalizedCurrent.split(' ').filter(w => w.length > 1);
+  const candidateWords = normalizedCandidate.split(' ').filter(w => w.length > 1);
+
+  if (currentWords.length === 0 || candidateWords.length === 0) return false;
+
+  // Remove singer name words from both to isolate the song name
+  const currentSongWords = currentWords.filter(w => !currentSingerWords.includes(w));
+  const candidateSongWords = candidateWords.filter(w => !currentSingerWords.includes(w));
+
+  // If after removing singer words, both have 0 unique words, it's ambiguous — don't flag
+  if (currentSongWords.length === 0 && candidateSongWords.length === 0) return false;
+
+  // Check overlap: if ALL significant words of the current song appear in the candidate, it's a duplicate
+  if (currentSongWords.length > 0) {
+    const matchCount = currentSongWords.filter(w => candidateSongWords.includes(w)).length;
+    const overlapRatio = matchCount / currentSongWords.length;
+    // If 80%+ of the current song's words are found in the candidate, it's the same song
+    if (overlapRatio >= 0.8) return true;
+  }
+
+  // Also check if candidate song words are a subset of current (catches shorter variants)
+  if (candidateSongWords.length > 0 && currentSongWords.length > 0) {
+    const reverseMatch = candidateSongWords.filter(w => currentSongWords.includes(w)).length;
+    const reverseRatio = reverseMatch / candidateSongWords.length;
+    if (reverseRatio >= 0.8) return true;
+  }
+
+  // Exact normalized match
+  if (normalizedCurrent === normalizedCandidate) return true;
+
+  return false;
+}
+
+// --- Multi-Factor Scoring System ---
+// Scores a candidate video for recommendation quality.
+function scoreCandidate(video, singerName, currentSingerWords, fromArtistSearch) {
+  let score = 0;
+  const vTitle = (video.title || '').toLowerCase();
+  const vChannel = ((video.author && video.author.name) || '').toLowerCase();
+  const views = video.views || 0;
+
+  // PRIORITY 1: Same singer (massive bonus)
+  // Check if the singer name appears in the video title or channel
+  if (singerName) {
+    const singerInTitle = currentSingerWords.some(w => w.length > 2 && vTitle.includes(w));
+    const singerInChannel = currentSingerWords.some(w => w.length > 2 && vChannel.includes(w));
+    if (singerInTitle || singerInChannel) {
+      score += 500;
+    }
+  }
+
+  // Bonus for coming from the artist-specific search query
+  if (fromArtistSearch) {
+    score += 200;
+  }
+
+  // PRIORITY 2: View count (popularity = quality signal)
+  // Normalize: 100M+ views = 100 points, scaling logarithmically
+  if (views > 0) {
+    score += Math.min(100, Math.floor(Math.log10(views + 1) * 12));
+  }
+
+  // PRIORITY 3: Known major Bollywood/Punjabi labels (quality signal)
+  const trustedLabels = ['t-series', 'speed records', 'zee music', 'tips', 'yrf', 'sony music india', 'desi melodies', 'geet mp3', 'jjust music', 'white hill music', 'anand audio'];
+  if (trustedLabels.some(label => vChannel.includes(label))) {
+    score += 50;
+  }
+
+  // PENALTY: Duration too short or too long (unusual for a song)
+  const dur = video.seconds || 0;
+  if (dur < 120 || dur > 480) {
+    score -= 50;
+  }
+
+  // PENALTY: Title contains bad keywords indicating low quality
+  const penaltyWords = ['remix', 'slowed', 'reverb', 'cover', 'karaoke', 'instrumental', 'mashup', '8d', 'lofi', 'nightcore'];
+  for (const pw of penaltyWords) {
+    if (vTitle.includes(pw)) {
+      score -= 100;
+    }
+  }
+
+  return score;
+}
+
+// --- Known Artist Database ---
+// Full list of known Bollywood/Punjabi artists for direct name detection in titles.
+// This is critical when the YouTube channel is a label (T-Series, Speed Records, etc.)
+const KNOWN_ARTISTS = [
+  'yo yo honey singh', 'honey singh',
+  'badshah', 'raftaar', 'ikka', 'divine', 'mc stan', 'emiway bantai', 'king', 'kr$na', 'seedhe maut',
+  'guru randhawa', 'harrdy sandhu', 'hardy sandhu', 'jassi gill', 'jassie gill',
+  'ap dhillon', 'karan aujla', 'diljit dosanjh', 'sidhu moose wala', 'ammy virk', 'shubh', 'b praak', 'jaani',
+  'arijit singh', 'jubin nautiyal', 'atif aslam', 'armaan malik', 'darshan raval', 'vishal mishra',
+  'stebin ben', 'rahat fateh ali khan', 'udit narayan', 'kumar sanu',
+  'neha kakkar', 'tony kakkar', 'shreya ghoshal', 'sunidhi chauhan', 'palak muchhal',
+  'dhvani bhanushali', 'tulsi kumar', 'monali thakur', 'kanika kapoor',
+  'nucleya', 'tanveer evan', 'mika singh', 'yo yo honey singh',
 ];
 
+// --- Smart Query Builder ---
+// Builds multiple search queries to maximize coverage of same-artist + related-artist + same-vibe songs.
+function buildSmartQueries(rawTitle, rawArtist) {
+  const normalizedCurrent = normalizeTitle(rawTitle);
+  const rawTitleLower = rawTitle.toLowerCase();
+  const extractedSinger = extractSingerFromTitle(rawTitle);
+  const safeArtist = (rawArtist && rawArtist !== 'Unknown Artist' && rawArtist.toLowerCase() !== 'autoplay artist') ? rawArtist : '';
+
+  // Determine the best singer name to use
+  // YouTube often returns label names (T-Series, Zee Music) as artist — prefer extracted singer from title
+  const knownLabels = [
+    't-series', 'tseries', 't series', 'speed records', 'zee music', 'tips official',
+    'yrf', 'sony music', 'desi melodies', 'geet mp3', 'white hill', 'jjust music',
+    'anand audio', 'saregama', 'eros now', 'shemaroo', 'ultra bollywood', 'venus',
+    'pen movies', 'pen studios', 'aditya music', 'lahari music', 'sun music',
+  ];
+  const artistIsLabel = knownLabels.some(label => safeArtist.toLowerCase().includes(label));
+
+  let singerName = '';
+
+  // Priority 1: Try to extract singer from title separator pattern ("Song - Singer")
+  if (extractedSinger && extractedSinger.length > 2) {
+    singerName = extractedSinger;
+  }
+  // Priority 2: If the reported artist is NOT a label, use it
+  else if (safeArtist && !artistIsLabel) {
+    singerName = safeArtist.toLowerCase();
+  }
+
+  // Priority 3 (KEY FIX): Scan the raw title for known artist names directly.
+  // This handles titles like "Blue Eyes Full Video Song Yo Yo Honey Singh | T-Series"
+  // where T-Series is the channel but Yo Yo Honey Singh appears in the title text.
+  if (!singerName || singerName.length < 2) {
+    for (const knownArtist of KNOWN_ARTISTS) {
+      if (rawTitleLower.includes(knownArtist)) {
+        singerName = knownArtist;
+        console.log(`[Singer Detection] Found "${singerName}" in title text: "${rawTitle}"`);
+        break;
+      }
+    }
+  }
+
+  // Map of known Bollywood/Punjabi artists → related artists for better recommendations
+  const RELATED_ARTISTS_MAP = {
+    'yo yo honey singh': ['badshah', 'raftaar', 'ikka', 'guru randhawa', 'diljit dosanjh'],
+    'honey singh':       ['badshah', 'raftaar', 'ikka', 'guru randhawa', 'diljit dosanjh'],
+    'badshah':           ['yo yo honey singh', 'raftaar', 'guru randhawa', 'divine', 'king'],
+    'raftaar':           ['yo yo honey singh', 'badshah', 'divine', 'ikka'],
+    'guru randhawa':     ['harrdy sandhu', 'ap dhillon', 'jassie gill', 'badshah', 'b praak'],
+    'ap dhillon':        ['karan aujla', 'diljit dosanjh', 'guru randhawa', 'sidhu moose wala', 'shubh'],
+    'karan aujla':       ['ap dhillon', 'sidhu moose wala', 'diljit dosanjh', 'ammy virk', 'jassie gill'],
+    'diljit dosanjh':    ['ap dhillon', 'guru randhawa', 'ammy virk', 'jassie gill', 'harrdy sandhu'],
+    'arijit singh':      ['jubin nautiyal', 'atif aslam', 'armaan malik', 'b praak', 'darshan raval'],
+    'jubin nautiyal':    ['arijit singh', 'b praak', 'darshan raval', 'stebin ben', 'vishal mishra'],
+    'neha kakkar':       ['tony kakkar', 'dhvani bhanushali', 'tulsi kumar', 'shreya ghoshal', 'sunidhi chauhan'],
+    'divine':            ['raftaar', 'badshah', 'emiway bantai', 'mc stan'],
+    'sidhu moose wala':  ['ap dhillon', 'karan aujla', 'diljit dosanjh', 'ammy virk', 'shubh'],
+    'atif aslam':        ['arijit singh', 'rahat fateh ali khan', 'armaan malik', 'darshan raval', 'jubin nautiyal'],
+    'shreya ghoshal':    ['sunidhi chauhan', 'neha kakkar', 'palak muchhal', 'monali thakur', 'arijit singh'],
+    'b praak':           ['jaani', 'ammy virk', 'jubin nautiyal', 'arijit singh', 'darshan raval'],
+    'king':              ['badshah', 'raftaar', 'divine', 'mc stan'],
+    'mc stan':           ['divine', 'emiway bantai', 'king', 'raftaar'],
+    'shubh':             ['ap dhillon', 'sidhu moose wala', 'karan aujla', 'diljit dosanjh', 'guru randhawa'],
+    'darshan raval':     ['arijit singh', 'jubin nautiyal', 'vishal mishra', 'b praak', 'armaan malik'],
+    'harrdy sandhu':     ['guru randhawa', 'diljit dosanjh', 'jassie gill', 'b praak', 'ammy virk'],
+    'hardy sandhu':      ['guru randhawa', 'diljit dosanjh', 'jassie gill', 'b praak', 'ammy virk'],
+  };
+
+  // Find related artists — match by substring so "yo yo honey singh" matches "honey singh" key
+  let relatedArtists = [];
+  const singerKey = singerName.trim().toLowerCase();
+  for (const [key, related] of Object.entries(RELATED_ARTISTS_MAP)) {
+    if (singerKey === key || singerKey.includes(key) || key.includes(singerKey)) {
+      relatedArtists = related;
+      break;
+    }
+  }
+
+  const queries = [];
+
+  if (singerName) {
+    // Query 1: Direct singer name — top hits
+    queries.push({ query: `${singerName} top hit songs hindi punjabi`, tag: 'artist_direct', weight: 3 });
+    // Query 2: Singer playlist
+    queries.push({ query: `${singerName} all songs best playlist`, tag: 'artist_playlist', weight: 2 });
+  }
+
+  // Query 3: Related artists (pick top 2)
+  if (relatedArtists.length > 0) {
+    const topRelated = relatedArtists.slice(0, 2);
+    for (const ra of topRelated) {
+      queries.push({ query: `${ra} top hit songs hindi punjabi`, tag: 'related_artist', weight: 1 });
+    }
+  }
+
+  // Query 4: Vibe match — ensures same language is anchored
+  if (singerName) {
+    queries.push({ query: `${singerName} superhit songs party dj`, tag: 'vibe_match', weight: 1 });
+  } else if (normalizedCurrent) {
+    queries.push({ query: `${normalizedCurrent} similar hindi punjabi party songs`, tag: 'vibe_match', weight: 1 });
+  }
+
+  // Query 5: Fallback — only if no singer detected at all
+  if (!singerName) {
+    queries.push({ query: `top bollywood punjabi party songs 2024 hindi`, tag: 'generic_fallback', weight: 0 });
+  }
+
+  return { queries, singerName, normalizedCurrent };
+}
+
+// --- History Tracking ---
 function addToHistory(room, song) {
   if (!room || !song || !song.url) return;
   if (!room.playedHistory) room.playedHistory = [];
   if (!room.playedHistory.includes(song.url)) {
     room.playedHistory.push(song.url);
   }
-  if (room.playedHistory.length > 15) {
-    room.playedHistory.shift();
+  // Also track normalized titles to catch cross-channel duplicates
+  if (!room.playedTitleHistory) room.playedTitleHistory = [];
+  const normTitle = normalizeTitle(song.title || '');
+  if (normTitle && !room.playedTitleHistory.includes(normTitle)) {
+    room.playedTitleHistory.push(normTitle);
   }
+  // Keep history bounded
+  if (room.playedHistory.length > 30) room.playedHistory.shift();
+  if (room.playedTitleHistory.length > 30) room.playedTitleHistory.shift();
 }
 
+// --- Fallback Song Playback ---
+// Only used as absolute last resort if YouTube search completely fails
 function playFallbackSong(room, roomCode, previousSong) {
   addToHistory(room, previousSong);
+  console.log(`[Autoplay Fallback] YouTube search failed. Attempting generic Bollywood fallback for room ${roomCode}`);
 
-  const availableFallbacks = FALLBACK_SONGS.filter((s) => {
-    const inHistory = room.playedHistory?.includes(s.url);
-    const inQueue = room.queue.some((q) => q.url === s.url);
-    const inAutoplay = room.autoplayQueue?.some((q) => q.url === s.url);
-    const isSelf = room.currentSong && (room.currentSong.url === s.url);
-    const isPrev = previousSong && (previousSong.url === s.url || previousSong.id === s.id);
-    return !inHistory && !inQueue && !inAutoplay && !isSelf && !isPrev;
+  // Instead of hardcoded SoundHelix, try one last generic YouTube search
+  yts("top bollywood party songs 2024 playlist").then(res => {
+    const videos = (res.videos || []).filter(v => {
+      const dur = v.seconds || 0;
+      return dur >= 120 && dur <= 480 && !isBadVideoType(v.title);
+    });
+
+    if (videos.length > 0) {
+      const pick = videos[Math.floor(Math.random() * Math.min(10, videos.length))];
+      const autoplaySong = {
+        id: pick.videoId,
+        title: pick.title,
+        artist: (pick.author && pick.author.name) || "Autoplay",
+        album: "Autoplay Related",
+        duration: pick.seconds || 180,
+        albumArt: pick.thumbnail || pick.image || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+        url: pick.videoId,
+        addedBy: "Autoplay Fallback",
+        addedAt: Date.now(),
+      };
+      room.currentSong = { ...autoplaySong, isPlaying: true, progress: 0, startTime: Date.now() };
+      io.to(roomCode).emit("song:change", room.currentSong);
+      logRoomEvent(room, `Autoplay fallback started song: "${autoplaySong.title}"`);
+    }
+  }).catch(err => {
+    console.error(`[Autoplay Fallback] Even generic search failed for room ${roomCode}:`, err);
   });
-
-  const fallback =
-    availableFallbacks.length > 0
-      ? availableFallbacks[
-          Math.floor(Math.random() * availableFallbacks.length)
-        ]
-      : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
-
-  const autoplaySong = {
-    ...fallback,
-    id: Math.random().toString(36).substring(2, 9),
-    addedBy: "Autoplay Fallback",
-    addedAt: Date.now(),
-  };
-
-  room.currentSong = {
-    ...autoplaySong,
-    isPlaying: true,
-    progress: 0,
-    startTime: Date.now(),
-  };
-
-  console.log(
-    `[Autoplay Fallback] Playing song: "${autoplaySong.title}" in room ${roomCode}`,
-  );
-  io.to(roomCode).emit("song:change", room.currentSong);
-  logRoomEvent(room, `Autoplay fallback started song: "${autoplaySong.title}"`);
 }
 
 
+// ============================================================================
+// MAIN AUTOPLAY QUEUE ENGINE
+// ============================================================================
 async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
   if (!room || !currentSongOrLastPlayed) return;
   if (!room.autoplayQueue) room.autoplayQueue = [];
 
-  // If the autoplay queue already has 5 or more songs, we don't need to do anything
+  // If the autoplay queue already has 5 or more songs, skip
   if (room.autoplayQueue.length >= 5) {
-    // Send updated autoplay queue to host
     io.to(room.hostSocketId).emit("autoplayQueue:update", room.autoplayQueue);
     return;
   }
 
   try {
-    const query = `${currentSongOrLastPlayed.title} ${currentSongOrLastPlayed.artist || ""} related music`;
-    console.log(
-      `[Autoplay Queue] Replenishing. Searching related songs for: "${query}"`,
-    );
+    const rawTitle = currentSongOrLastPlayed.title || "";
+    const rawArtist = currentSongOrLastPlayed.artist || "";
 
-    const r = await yts(query);
-    const videos = r.videos || [];
+    // STEP 1: Build normalized data for the current song
+    const { queries, singerName, normalizedCurrent } = buildSmartQueries(rawTitle, rawArtist);
+    const currentSingerWords = singerName.split(' ').filter(w => w.length > 1);
 
     if (!room.playedHistory) room.playedHistory = [];
+    if (!room.playedTitleHistory) room.playedTitleHistory = [];
 
-    // Filter out videos already in queue, autoplay queue, playedHistory, active song, or with invalid duration
-    // Standard song duration: between 30 seconds and 10 minutes (600 seconds)
-    let candidates = videos.filter((v) => {
-      const isSelf =
-        v.videoId === currentSongOrLastPlayed.url ||
-        v.videoId === currentSongOrLastPlayed.id;
-      const inHistory = room.playedHistory.includes(v.videoId);
-      const inQueue = room.queue.some((q) => q.url === v.videoId);
-      const inAutoplay = room.autoplayQueue.some((q) => q.url === v.videoId);
-      const isValidDuration = v.seconds && v.seconds >= 30 && v.seconds <= 600;
-      return !isSelf && !inHistory && !inQueue && !inAutoplay && isValidDuration;
-    });
+    console.log(`[Autoplay Engine] Current: "${rawTitle}" | Singer: "${singerName}" | Normalized: "${normalizedCurrent}"`);
+    console.log(`[Autoplay Engine] Executing ${queries.length} search queries...`);
 
-    if (candidates.length === 0) {
-      // Relax history constraint temporarily for candidate selection, but do NOT wipe room's persistent playedHistory registry
-      candidates = videos.filter((v) => {
-        const isSelf =
-          v.videoId === currentSongOrLastPlayed.url ||
-          v.videoId === currentSongOrLastPlayed.id;
-        const inQueue = room.queue.some((q) => q.url === v.videoId);
-        const inAutoplay = room.autoplayQueue.some((q) => q.url === v.videoId);
-        const isValidDuration = v.seconds && v.seconds >= 30 && v.seconds <= 600;
-        return !isSelf && !inQueue && !inAutoplay && isValidDuration;
-      });
+    // STEP 2: Execute all search queries in parallel
+    const searchResults = await Promise.all(
+      queries.map(async (q) => {
+        try {
+          const res = await yts(q.query);
+          return { videos: res.videos || [], tag: q.tag, weight: q.weight };
+        } catch (e) {
+          console.warn(`[Autoplay Engine] Query failed: "${q.query}"`, e.message);
+          return { videos: [], tag: q.tag, weight: q.weight };
+        }
+      })
+    );
+
+    // STEP 3: Combine all results with metadata
+    const allVideos = [];
+    const seenVideoIds = new Set();
+    for (const result of searchResults) {
+      for (const v of result.videos) {
+        if (!seenVideoIds.has(v.videoId)) {
+          seenVideoIds.add(v.videoId);
+          allVideos.push({ ...v, _tag: result.tag, _weight: result.weight });
+        }
+      }
     }
 
-    // Shuffle the candidates list (Fisher-Yates) to ensure variety in recommendations
-    for (let i = candidates.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    console.log(`[Autoplay Engine] Total unique candidates before filtering: ${allVideos.length}`);
+
+    // STEP 4: STRICT FILTERING PIPELINE
+    const candidates = [];
+    const seenNormalizedTitles = new Set();
+
+    // Add already-known normalized titles from autoplay queue
+    for (const q of room.autoplayQueue) {
+      seenNormalizedTitles.add(normalizeTitle(q.title || ''));
     }
 
+    for (const v of allVideos) {
+      const vId = v.videoId;
+      const vTitle = v.title || '';
+      const vNormTitle = normalizeTitle(vTitle);
+      const vDuration = v.seconds || 0;
+
+      // --- FILTER 1: Skip exact same video ---
+      if (vId === currentSongOrLastPlayed.url || vId === currentSongOrLastPlayed.id) continue;
+
+      // --- FILTER 2: Skip if already in history, queue, or autoplay queue ---
+      if (room.playedHistory.includes(vId)) continue;
+      if (room.queue.some(q => q.url === vId)) continue;
+      if (room.autoplayQueue.some(q => q.url === vId)) continue;
+
+      // --- FILTER 3: Duration check (real songs are 2-8 minutes) ---
+      if (vDuration < 90 || vDuration > 480) continue;
+
+      // --- FILTER 4: Bad video type (teaser, trailer, reaction, remix, beats, etc.) ---
+      const vChannel = (v.author && v.author.name) || '';
+      if (isBadVideoType(vTitle, vChannel)) {
+        console.log(`[Autoplay Filter] BLOCKED bad type: "${vTitle}" (channel: "${vChannel}")`);
+        continue;
+      }
+
+      // --- FILTER 4b: Wrong language / regional content ---
+      if (isWrongLanguage(vTitle, vChannel)) {
+        console.log(`[Autoplay Filter] BLOCKED wrong language: "${vTitle}" (channel: "${vChannel}")`);
+        continue;
+      }
+
+      // --- FILTER 5: SEMANTIC DUPLICATE — is this the SAME SONG as currently playing? ---
+      if (isDuplicateSong(normalizedCurrent, vNormTitle, currentSingerWords)) {
+        console.log(`[Autoplay Filter] BLOCKED duplicate: "${vTitle}" (normalized: "${vNormTitle}" ≈ "${normalizedCurrent}")`);
+        continue;
+      }
+
+      // --- FILTER 6: Check against already-played normalized titles ---
+      if (room.playedTitleHistory.includes(vNormTitle)) continue;
+
+      // --- FILTER 7: Prevent multiple versions of the same song in results ---
+      if (seenNormalizedTitles.has(vNormTitle)) continue;
+      seenNormalizedTitles.add(vNormTitle);
+
+      // --- PASSED ALL FILTERS ---
+      const score = scoreCandidate(v, singerName, currentSingerWords, v._tag === 'artist_direct' || v._tag === 'artist_playlist');
+      candidates.push({ ...v, _score: score + (v._weight * 100) });
+    }
+
+    console.log(`[Autoplay Engine] Candidates after filtering: ${candidates.length}`);
+
+    // STEP 5: Sort by score (descending)
+    candidates.sort((a, b) => b._score - a._score);
+
+    // STEP 6: Pick top candidates and add to autoplay queue
     const needed = 5 - room.autoplayQueue.length;
-    const addedCount = Math.min(needed, candidates.length);
+    const picked = candidates.slice(0, Math.min(needed, candidates.length));
 
-    for (let i = 0; i < addedCount; i++) {
-      const v = candidates[i];
+    for (const v of picked) {
       const autoplaySong = {
         id: v.videoId,
         title: v.title,
-        artist: (v.author && v.author.name) || "Autoplay Artist",
+        artist: (v.author && v.author.name) || "Autoplay",
         album: "Autoplay Related",
         duration: v.seconds || 180,
-        albumArt:
-          v.thumbnail ||
-          v.image ||
-          "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+        albumArt: v.thumbnail || v.image || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
         url: v.videoId,
         addedBy: "Autoplay",
         addedAt: Date.now(),
       };
       room.autoplayQueue.push(autoplaySong);
+      console.log(`[Autoplay Engine] ✓ Added: "${v.title}" (score: ${v._score}, tag: ${v._tag})`);
     }
 
-    // Fallback to pre-defined mock tracks if still empty or deficient, ensuring unique recommendations
-    while (room.autoplayQueue.length < 5) {
-      const availableFallbacks = FALLBACK_SONGS.filter((s) => {
-        const inHistory = room.playedHistory?.includes(s.url);
-        const inQueue = room.queue.some((q) => q.url === s.url);
-        const inAutoplay = room.autoplayQueue.some((q) => q.url === s.url);
-        const isSelf = room.currentSong && (room.currentSong.url === s.url);
-        return !inHistory && !inQueue && !inAutoplay && !isSelf;
-      });
+    // STEP 7: If still not enough, try broader related queries
+    if (room.autoplayQueue.length < 5) {
+      console.log(`[Autoplay Engine] Only ${room.autoplayQueue.length}/5 songs. Running broader fallback search...`);
 
-      const fallback =
-        availableFallbacks.length > 0
-          ? availableFallbacks[Math.floor(Math.random() * availableFallbacks.length)]
-          : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+      const fallbackQueries = [
+        `top hindi punjabi party songs 2024`,
+        `best bollywood dance songs playlist`,
+        singerName ? `${singerName} type beat hindi punjabi` : `trending punjabi songs`,
+      ];
 
-      room.autoplayQueue.push({
-        ...fallback,
-        id: Math.random().toString(36).substring(2, 9),
-        addedBy: "Autoplay Fallback",
-        addedAt: Date.now(),
-      });
+      for (const fq of fallbackQueries) {
+        if (room.autoplayQueue.length >= 5) break;
+        try {
+          const fbRes = await yts(fq);
+          const fbVideos = (fbRes.videos || []).filter(v => {
+            const dur = v.seconds || 0;
+            const vNorm = normalizeTitle(v.title || '');
+            return dur >= 90 && dur <= 480
+              && !isBadVideoType(v.title)
+              && !isDuplicateSong(normalizedCurrent, vNorm, currentSingerWords)
+              && !room.playedHistory.includes(v.videoId)
+              && !room.queue.some(q => q.url === v.videoId)
+              && !room.autoplayQueue.some(q => q.url === v.videoId)
+              && !seenNormalizedTitles.has(vNorm);
+          });
+
+          for (const v of fbVideos) {
+            if (room.autoplayQueue.length >= 5) break;
+            const vNorm = normalizeTitle(v.title || '');
+            seenNormalizedTitles.add(vNorm);
+            room.autoplayQueue.push({
+              id: v.videoId,
+              title: v.title,
+              artist: (v.author && v.author.name) || "Autoplay",
+              album: "Autoplay Related",
+              duration: v.seconds || 180,
+              albumArt: v.thumbnail || v.image || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+              url: v.videoId,
+              addedBy: "Autoplay",
+              addedAt: Date.now(),
+            });
+            console.log(`[Autoplay Engine] ✓ Fallback added: "${v.title}"`);
+          }
+        } catch (e) {
+          console.warn(`[Autoplay Engine] Fallback query failed: "${fq}"`);
+        }
+      }
     }
+
+    console.log(`[Autoplay Engine] Final queue size: ${room.autoplayQueue.length}`);
+    room.autoplayQueue.forEach((s, i) => console.log(`  [${i + 1}] ${s.title}`));
 
     // Broadcast updated autoplay queue to host
     io.to(room.hostSocketId).emit("autoplayQueue:update", room.autoplayQueue);
   } catch (err) {
     console.error(
-      `[Autoplay Queue] Error replenishing queue for room ${roomCode}:`,
+      `[Autoplay Engine] Critical error for room ${roomCode}:`,
       err,
     );
-    // Fill with fallback tracks, ensuring uniqueness
-    while (room.autoplayQueue.length < 5) {
-      const availableFallbacks = FALLBACK_SONGS.filter((s) => {
-        const inHistory = room.playedHistory?.includes(s.url);
-        const inQueue = room.queue.some((q) => q.url === s.url);
-        const inAutoplay = room.autoplayQueue.some((q) => q.url === s.url);
-        const isSelf = room.currentSong && (room.currentSong.url === s.url);
-        return !inHistory && !inQueue && !inAutoplay && !isSelf;
-      });
-
-      const fallback =
-        availableFallbacks.length > 0
-          ? availableFallbacks[Math.floor(Math.random() * availableFallbacks.length)]
-          : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
-
-      room.autoplayQueue.push({
-        ...fallback,
-        id: Math.random().toString(36).substring(2, 9),
-        addedBy: "Autoplay Fallback",
-        addedAt: Date.now(),
-      });
+    // Emergency fallback — try a simple generic search
+    try {
+      const emergencyRes = await yts("top bollywood punjabi hits 2024");
+      const emergencyVideos = (emergencyRes.videos || []).filter(v => (v.seconds || 0) >= 120 && (v.seconds || 0) <= 480);
+      for (const v of emergencyVideos) {
+        if (room.autoplayQueue.length >= 5) break;
+        if (!room.autoplayQueue.some(q => q.url === v.videoId)) {
+          room.autoplayQueue.push({
+            id: v.videoId,
+            title: v.title,
+            artist: (v.author && v.author.name) || "Autoplay",
+            album: "Autoplay Related",
+            duration: v.seconds || 180,
+            albumArt: v.thumbnail || v.image || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300&q=80",
+            url: v.videoId,
+            addedBy: "Autoplay Emergency",
+            addedAt: Date.now(),
+          });
+        }
+      }
+    } catch (e) {
+      console.error(`[Autoplay Engine] Emergency fallback also failed:`, e);
     }
     io.to(room.hostSocketId).emit("autoplayQueue:update", room.autoplayQueue);
   }
