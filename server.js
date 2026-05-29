@@ -266,11 +266,29 @@ const FALLBACK_SONGS = [
   },
 ];
 
+function addToHistory(room, song) {
+  if (!room || !song || !song.url) return;
+  if (!room.playedHistory) room.playedHistory = [];
+  if (!room.playedHistory.includes(song.url)) {
+    room.playedHistory.push(song.url);
+  }
+  if (room.playedHistory.length > 15) {
+    room.playedHistory.shift();
+  }
+}
+
 function playFallbackSong(room, roomCode, previousSong) {
-  const availableFallbacks = FALLBACK_SONGS.filter(
-    (s) =>
-      !previousSong || (s.url !== previousSong.url && s.id !== previousSong.id),
-  );
+  addToHistory(room, previousSong);
+
+  const availableFallbacks = FALLBACK_SONGS.filter((s) => {
+    const inHistory = room.playedHistory?.includes(s.url);
+    const inQueue = room.queue.some((q) => q.url === s.url);
+    const inAutoplay = room.autoplayQueue?.some((q) => q.url === s.url);
+    const isSelf = room.currentSong && (room.currentSong.url === s.url);
+    const isPrev = previousSong && (previousSong.url === s.url || previousSong.id === s.id);
+    return !inHistory && !inQueue && !inAutoplay && !isSelf && !isPrev;
+  });
+
   const fallback =
     availableFallbacks.length > 0
       ? availableFallbacks[
@@ -299,6 +317,7 @@ function playFallbackSong(room, roomCode, previousSong) {
   logRoomEvent(room, `Autoplay fallback started song: "${autoplaySong.title}"`);
 }
 
+
 async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
   if (!room || !currentSongOrLastPlayed) return;
   if (!room.autoplayQueue) room.autoplayQueue = [];
@@ -321,7 +340,8 @@ async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
 
     if (!room.playedHistory) room.playedHistory = [];
 
-    // Filter out videos already in queue, autoplay queue, playedHistory, or active song
+    // Filter out videos already in queue, autoplay queue, playedHistory, active song, or with invalid duration
+    // Standard song duration: between 30 seconds and 10 minutes (600 seconds)
     let candidates = videos.filter((v) => {
       const isSelf =
         v.videoId === currentSongOrLastPlayed.url ||
@@ -329,19 +349,27 @@ async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
       const inHistory = room.playedHistory.includes(v.videoId);
       const inQueue = room.queue.some((q) => q.url === v.videoId);
       const inAutoplay = room.autoplayQueue.some((q) => q.url === v.videoId);
-      return !isSelf && !inHistory && !inQueue && !inAutoplay;
+      const isValidDuration = v.seconds && v.seconds >= 30 && v.seconds <= 600;
+      return !isSelf && !inHistory && !inQueue && !inAutoplay && isValidDuration;
     });
 
-    if (candidates.length === 0 && room.playedHistory.length > 0) {
-      room.playedHistory = [];
+    if (candidates.length === 0) {
+      // Relax history constraint temporarily for candidate selection, but do NOT wipe room's persistent playedHistory registry
       candidates = videos.filter((v) => {
         const isSelf =
           v.videoId === currentSongOrLastPlayed.url ||
           v.videoId === currentSongOrLastPlayed.id;
         const inQueue = room.queue.some((q) => q.url === v.videoId);
         const inAutoplay = room.autoplayQueue.some((q) => q.url === v.videoId);
-        return !isSelf && !inQueue && !inAutoplay;
+        const isValidDuration = v.seconds && v.seconds >= 30 && v.seconds <= 600;
+        return !isSelf && !inQueue && !inAutoplay && isValidDuration;
       });
+    }
+
+    // Shuffle the candidates list (Fisher-Yates) to ensure variety in recommendations
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
     }
 
     const needed = 5 - room.autoplayQueue.length;
@@ -366,12 +394,23 @@ async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
       room.autoplayQueue.push(autoplaySong);
     }
 
-    // Fallback to pre-defined mock tracks if still empty or deficient
+    // Fallback to pre-defined mock tracks if still empty or deficient, ensuring unique recommendations
     while (room.autoplayQueue.length < 5) {
-      const mock =
-        FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+      const availableFallbacks = FALLBACK_SONGS.filter((s) => {
+        const inHistory = room.playedHistory?.includes(s.url);
+        const inQueue = room.queue.some((q) => q.url === s.url);
+        const inAutoplay = room.autoplayQueue.some((q) => q.url === s.url);
+        const isSelf = room.currentSong && (room.currentSong.url === s.url);
+        return !inHistory && !inQueue && !inAutoplay && !isSelf;
+      });
+
+      const fallback =
+        availableFallbacks.length > 0
+          ? availableFallbacks[Math.floor(Math.random() * availableFallbacks.length)]
+          : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+
       room.autoplayQueue.push({
-        ...mock,
+        ...fallback,
         id: Math.random().toString(36).substring(2, 9),
         addedBy: "Autoplay Fallback",
         addedAt: Date.now(),
@@ -385,12 +424,23 @@ async function fillAutoplayQueue(room, roomCode, currentSongOrLastPlayed) {
       `[Autoplay Queue] Error replenishing queue for room ${roomCode}:`,
       err,
     );
-    // Fill with fallback tracks
+    // Fill with fallback tracks, ensuring uniqueness
     while (room.autoplayQueue.length < 5) {
-      const mock =
-        FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+      const availableFallbacks = FALLBACK_SONGS.filter((s) => {
+        const inHistory = room.playedHistory?.includes(s.url);
+        const inQueue = room.queue.some((q) => q.url === s.url);
+        const inAutoplay = room.autoplayQueue.some((q) => q.url === s.url);
+        const isSelf = room.currentSong && (room.currentSong.url === s.url);
+        return !inHistory && !inQueue && !inAutoplay && !isSelf;
+      });
+
+      const fallback =
+        availableFallbacks.length > 0
+          ? availableFallbacks[Math.floor(Math.random() * availableFallbacks.length)]
+          : FALLBACK_SONGS[Math.floor(Math.random() * FALLBACK_SONGS.length)];
+
       room.autoplayQueue.push({
-        ...mock,
+        ...fallback,
         id: Math.random().toString(36).substring(2, 9),
         addedBy: "Autoplay Fallback",
         addedAt: Date.now(),
@@ -423,18 +473,7 @@ async function playRelatedSong(roomCode, previousSong) {
       return;
     }
 
-    if (!room.playedHistory) {
-      room.playedHistory = [];
-    }
-
-    if (previousSong && previousSong.url) {
-      if (!room.playedHistory.includes(previousSong.url)) {
-        room.playedHistory.push(previousSong.url);
-      }
-      if (room.playedHistory.length > 15) {
-        room.playedHistory.shift();
-      }
-    }
+    addToHistory(room, previousSong);
 
     // Populate autoplayQueue if it's empty
     if (!room.autoplayQueue || room.autoplayQueue.length === 0) {
@@ -875,8 +914,9 @@ app.get("/api/search", rateLimiter, async (req, res) => {
       `Searching YouTube for: "${searchQuery}" (original: "${trimmedQuery}")`,
     );
     const r = await yts(searchQuery);
-    // Limit to 10 results for faster response and clean UI
-    const videos = (r.videos || []).slice(0, 10);
+    // Limit results for faster response and clean UI (default 30, max 50)
+    const limit = Math.min(parseInt(req.query.limit) || 30, 50);
+    const videos = (r.videos || []).slice(0, limit);
     const results = videos.map((v) => ({
       id: v.videoId,
       title: v.title,
@@ -1384,6 +1424,7 @@ io.on("connection", (socket) => {
     }
 
     const previousSong = room.currentSong;
+    addToHistory(room, previousSong);
     logRoomEvent(
       room,
       `Song skipped by ${room.hostSocketId === socket.id ? "host" : "guest " + userName}: "${previousSong ? previousSong.title : "None"}"`,
@@ -1422,6 +1463,7 @@ io.on("connection", (socket) => {
       );
 
       const previousSong = room.currentSong;
+      addToHistory(room, previousSong);
 
       if (room.queue.length > 0) {
         const nextSong = room.queue.shift();

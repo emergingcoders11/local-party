@@ -16,7 +16,13 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
   const [isSearching, setIsSearching] = useState(false);
   const [filteredSongs, setFilteredSongs] = useState<Song[]>([]);
   const [addingSongIds, setAddingSongIds] = useState<Record<string, 'loading' | 'done'>>({});
+  const [visibleCount, setVisibleCount] = useState(10);
   const dialogRef = useRef<HTMLDialogElement>(null);
+
+  // Reset pagination when search query or open status changes
+  useEffect(() => {
+    setVisibleCount(10);
+  }, [searchQuery, isOpen]);
 
   // Manage <dialog> HTML5 standard open state
   useEffect(() => {
@@ -88,7 +94,7 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
         };
         const serverUrl = getServerUrl(backendHost);
         const response = await fetch(
-          `${serverUrl}/api/search?q=${encodeURIComponent(term)}`,
+          `${serverUrl}/api/search?q=${encodeURIComponent(term)}&limit=30`,
           { signal: controller.signal }
         );
         const data = await response.json();
@@ -203,7 +209,7 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
             /* Songs List */
             <div className="space-y-2">
               <AnimatePresence>
-                {filteredSongs.map((song) => (
+                {filteredSongs.slice(0, visibleCount).map((song) => (
                   <motion.div
                     key={song.id}
                     layout
@@ -213,7 +219,7 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
                     className="flex items-center gap-3 p-2 hover:bg-white/5 rounded-xl transition group"
                   >
                     <img 
-                      src={song.albumArt} 
+                       src={song.albumArt} 
                       alt={song.album} 
                       className="w-12 h-12 rounded-md object-cover border border-white/5 group-hover:scale-105 transition duration-300"
                     />
@@ -250,6 +256,17 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
                   </motion.div>
                 ))}
               </AnimatePresence>
+
+              {filteredSongs.length > visibleCount && (
+                <div className="flex justify-center pt-4 pb-2">
+                  <button
+                    onClick={() => setVisibleCount(prev => prev + 10)}
+                    className="px-6 py-2.5 rounded-full bg-white/5 border border-white/10 text-white font-extrabold text-xs hover:bg-white/10 hover:border-white/20 hover:scale-105 active:scale-95 transition-all duration-300 shadow-md cursor-pointer select-none"
+                  >
+                    Load More Songs
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

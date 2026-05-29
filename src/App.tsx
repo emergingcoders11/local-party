@@ -1674,30 +1674,44 @@ function App() {
                   />
                 </div>
 
-                <div className="flex flex-col gap-3 py-1">
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="is-private-room"
-                      type="checkbox"
-                      checked={isPrivateRoom}
-                      onChange={(e) => setIsPrivateRoom(e.target.checked)}
-                      className="w-4 h-4 rounded-sm bg-spotify-light-gray/60 border-white/10 text-spotify-green focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                    />
-                    <label htmlFor="is-private-room" className="text-xs font-bold uppercase tracking-wider text-spotify-text cursor-pointer select-none">
-                      Private Room (Password Protected)
+                <div className="flex flex-col gap-3 py-1 text-left">
+                  {/* Private Room Card */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all duration-300">
+                    <div className="flex flex-col text-left pr-4">
+                      <label htmlFor="is-private-room" className="text-xs font-bold text-white uppercase tracking-wider cursor-pointer select-none">
+                        Private Room
+                      </label>
+                      <span className="text-[10px] text-spotify-text mt-0.5 select-none">Require a password to join this room</span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <input 
+                        id="is-private-room"
+                        type="checkbox" 
+                        checked={isPrivateRoom} 
+                        onChange={(e) => setIsPrivateRoom(e.target.checked)}
+                        className="sr-only peer" 
+                      />
+                      <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green shadow-inner"></div>
                     </label>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="is-unlisted-room"
-                      type="checkbox"
-                      checked={isUnlistedRoom}
-                      onChange={(e) => setIsUnlistedRoom(e.target.checked)}
-                      className="w-4 h-4 rounded-sm bg-spotify-light-gray/60 border-white/10 text-spotify-green focus:ring-0 focus:ring-offset-0 cursor-pointer"
-                    />
-                    <label htmlFor="is-unlisted-room" className="text-xs font-bold uppercase tracking-wider text-spotify-text cursor-pointer select-none text-left">
-                      Unlisted Room (Hide from discovery list & search)
+                  {/* Unlisted Room Card */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all duration-300">
+                    <div className="flex flex-col text-left pr-4">
+                      <label htmlFor="is-unlisted-room" className="text-xs font-bold text-white uppercase tracking-wider cursor-pointer select-none">
+                        Unlisted Room
+                      </label>
+                      <span className="text-[10px] text-spotify-text mt-0.5 select-none">Hide room from active list & search discovery</span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <input 
+                        id="is-unlisted-room"
+                        type="checkbox" 
+                        checked={isUnlistedRoom} 
+                        onChange={(e) => setIsUnlistedRoom(e.target.checked)}
+                        className="sr-only peer" 
+                      />
+                      <div className="relative w-9 h-5 bg-white/10 rounded-full peer-focus:ring-0 peer-checked:after:translate-x-4 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-spotify-green shadow-inner"></div>
                     </label>
                   </div>
                 </div>
