@@ -30,6 +30,7 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
     if (!dialog) return;
 
     if (isOpen) {
+      setSearchQuery('');
       dialog.showModal();
       // Focus the search input when dialog opens
       setTimeout(() => {
@@ -48,7 +49,7 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
 
     const handleOutsideClick = (e: MouseEvent) => {
       if (e.target !== dialog) return;
-      
+
       const rect = dialog.getBoundingClientRect();
       const clickInside = (
         rect.top <= e.clientY &&
@@ -84,12 +85,12 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
     setIsSearching(true);
     const term = trimmed || 'trending';
     const controller = new AbortController();
-    
+
     const delayDebounce = setTimeout(async () => {
       try {
         const getServerUrl = (host: string) => {
-          return host.includes('://') 
-            ? host 
+          return host.includes('://')
+            ? host
             : `http://${host}${host.includes(':') ? '' : ':3001'}`;
         };
         const serverUrl = getServerUrl(backendHost);
@@ -105,7 +106,7 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
       } finally {
         setIsSearching(false);
       }
-    }, searchQuery ? 500 : 0); // Trigger instantly for empty initial search (e.g. "trending")
+    }, searchQuery ? 300 : 0); // Trigger instantly for empty initial search (e.g. "trending")
 
     return () => {
       clearTimeout(delayDebounce);
@@ -117,10 +118,10 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
     if (addingSongIds[song.id]) return;
 
     setAddingSongIds(prev => ({ ...prev, [song.id]: 'loading' }));
-    
+
     // Call the parent handler to add to queue (emits over socket)
     const success = await onAddSong(song);
-    
+
     if (success) {
       setAddingSongIds(prev => ({ ...prev, [song.id]: 'done' }));
       // Revert back to original state after 2 seconds
@@ -161,8 +162,8 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
             <Music className="w-5 h-5 text-spotify-green animate-pulse" />
             <h3 className="text-xl font-bold font-sans">Suggest a Surprise Song</h3>
           </div>
-          <button 
-            onClick={onClose} 
+          <button
+            onClick={onClose}
             className="p-1.5 rounded-full hover:bg-white/10 transition text-spotify-text hover:text-white"
             aria-label="Close modal"
           >
@@ -218,9 +219,9 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
                     exit={{ opacity: 0 }}
                     className="flex items-center gap-3 p-2 hover:bg-white/5 rounded-xl transition group"
                   >
-                    <img 
-                       src={song.albumArt} 
-                      alt={song.album} 
+                    <img
+                      src={song.albumArt}
+                      alt={song.album}
                       className="w-12 h-12 rounded-md object-cover border border-white/5 group-hover:scale-105 transition duration-300"
                     />
                     <div className="flex-1 min-w-0">
@@ -236,13 +237,12 @@ export const SongSearchModal: React.FC<SongSearchModalProps> = ({ isOpen, onClos
                       <button
                         onClick={() => handleAdd(song)}
                         disabled={addingSongIds[song.id] === 'loading'}
-                        className={`p-2 rounded-full border transition flex items-center justify-center cursor-pointer ${
-                          addingSongIds[song.id] === 'done'
+                        className={`p-2 rounded-full border transition flex items-center justify-center cursor-pointer ${addingSongIds[song.id] === 'done'
                             ? 'bg-spotify-green border-spotify-green text-black'
                             : addingSongIds[song.id] === 'loading'
-                            ? 'bg-white/10 border-transparent text-white'
-                            : 'border-white/10 text-white hover:border-spotify-green hover:bg-spotify-green hover:text-black'
-                        }`}
+                              ? 'bg-white/10 border-transparent text-white'
+                              : 'border-white/10 text-white hover:border-spotify-green hover:bg-spotify-green hover:text-black'
+                          }`}
                       >
                         {addingSongIds[song.id] === 'done' ? (
                           <Check className="w-4 h-4 stroke-[3]" />
